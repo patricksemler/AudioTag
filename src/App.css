@@ -117,6 +117,72 @@ button.primary {
   border-color: var(--accent);
 }
 
+button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--row-selected);
+}
+
+/* ---------- find & replace bar ---------- */
+.find-replace {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.fr-row {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.fr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fr-field label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.fr-field input,
+.fr-field select {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.fr-field input {
+  min-width: 160px;
+}
+
+.fr-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  padding-bottom: 6px;
+}
+
+.fr-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.fr-scope {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 /* ---------- workspace ---------- */
 .workspace {
   flex: 1 1 auto;

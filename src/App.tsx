@@ -3,10 +3,20 @@ import { Music } from "lucide-react";
 import "./App.css";
 import { pickFiles, pickFolder, saveTracks, scanPaths } from "./api";
 import { FileGrid } from "./components/FileGrid";
+import { FindReplace, type FindReplaceOptions } from "./components/FindReplace";
 import { StatusBar } from "./components/StatusBar";
 import { TagEditor } from "./components/TagEditor";
 import { Toolbar } from "./components/Toolbar";
 import { EDITABLE_FIELDS, type EditableField, type Row, type Track } from "./types";
+
+/** Fields validated as numeric (UI-side). Excluded from "all text fields" replace. */
+const NUMERIC_FIELDS = new Set<EditableField>([
+  "track",
+  "track_total",
+  "disc",
+  "disc_total",
+  "year",
+]);
 
 function toRow(track: Track): Row {
   return { ...track, id: track.path, modified: false };
@@ -16,12 +26,33 @@ function isModified(row: Row, original: Track): boolean {
   return EDITABLE_FIELDS.some((f) => (row[f] ?? "") !== (original[f] ?? ""));
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Replace every occurrence of `find` in `haystack`, returning the result and hit count. */
+function replaceAllCount(
+  haystack: string,
+  find: string,
+  replacement: string,
+  matchCase: boolean,
+): { result: string; hits: number } {
+  const re = new RegExp(escapeRegExp(find), matchCase ? "g" : "gi");
+  let hits = 0;
+  const result = haystack.replace(re, () => {
+    hits++;
+    return replacement;
+  });
+  return { result, hits };
+}
+
 export default function App() {
   const [rows, setRows] = useState<Row[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusIndex, setFocusIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [findReplaceOpen, setFindReplaceOpen] = useState(false);
 
   // Snapshot of on-disk values, keyed by path, to detect & revert edits.
   const originals = useRef<Map<string, Track>>(new Map());
@@ -85,6 +116,53 @@ export default function App() {
           updated.modified = orig ? isModified(updated, orig) : true;
           return updated;
         }),
+      );
+    },
+    [selected],
+  );
+
+  // ----- batch find & replace -----
+  // Operates on the current selection, or every loaded file when nothing is selected.
+  const findReplace = useCallback(
+    ({ find, replace, field, matchCase }: FindReplaceOptions) => {
+      if (!find) return;
+      const fields =
+        field === "all" ? EDITABLE_FIELDS.filter((f) => !NUMERIC_FIELDS.has(f)) : [field];
+      const targetIds =
+        selected.size > 0 ? selected : new Set(rowsRef.current.map((r) => r.id));
+
+      let changedFiles = 0;
+      let totalHits = 0;
+      setRows((prev) =>
+        prev.map((r) => {
+          if (!targetIds.has(r.id)) return r;
+          let next = r;
+          let touched = false;
+          for (const f of fields) {
+            const cur = r[f] ?? "";
+            if (!cur) continue;
+            const { result, hits } = replaceAllCount(cur, find, replace, matchCase);
+            if (hits > 0) {
+              if (!touched) {
+                next = { ...r };
+                touched = true;
+              }
+              next[f] = result;
+              totalHits += hits;
+            }
+          }
+          if (touched) {
+            const orig = originals.current.get(r.id);
+            next.modified = orig ? isModified(next, orig) : true;
+            changedFiles++;
+          }
+          return next;
+        }),
+      );
+      setMessage(
+        totalHits > 0
+          ? `Replaced ${totalHits} occurrence${totalHits === 1 ? "" : "s"} in ${changedFiles} file${changedFiles === 1 ? "" : "s"}`
+          : `No matches for “${find}”`,
       );
     },
     [selected],
@@ -180,6 +258,13 @@ export default function App() {
 
   const empty = rows.length === 0;
 
+  // Find & replace targets the selection, or all files when nothing is selected.
+  const frTargetCount = selected.size > 0 ? selected.size : rows.length;
+  const frScopeLabel =
+    selected.size > 0
+      ? `${selected.size} selected file${selected.size === 1 ? "" : "s"}`
+      : `all ${rows.length} file${rows.length === 1 ? "" : "s"}`;
+
   return (
     <div className="app">
       <Toolbar
@@ -187,9 +272,21 @@ export default function App() {
         onOpenFiles={openFiles}
         onSave={save}
         onRevert={revert}
+        onToggleFindReplace={() => setFindReplaceOpen((v) => !v)}
+        findReplaceActive={findReplaceOpen}
+        hasFiles={!empty}
         modifiedCount={modifiedCount}
         busy={busy}
       />
+
+      {!empty && findReplaceOpen && (
+        <FindReplace
+          targetCount={frTargetCount}
+          scopeLabel={frScopeLabel}
+          onApply={findReplace}
+          onClose={() => setFindReplaceOpen(false)}
+        />
+      )}
 
       <main className="workspace">
         {empty ? (
