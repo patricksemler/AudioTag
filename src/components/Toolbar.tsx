@@ -1,4 +1,4 @@
-import { FolderOpen, Files, Save, Replace } from "lucide-react";
+import { FolderOpen, Files, Save, Replace, Music } from "lucide-react";
 
 interface ToolbarProps {
   onOpenFolder: () => void;
@@ -10,6 +10,8 @@ interface ToolbarProps {
   hasFiles: boolean;
   modifiedCount: number;
   busy: boolean;
+  /** Filename of the currently focused file, shown so users know what they're editing. */
+  currentFile?: string;
 }
 
 export function Toolbar(props: ToolbarProps) {
@@ -50,6 +52,12 @@ export function Toolbar(props: ToolbarProps) {
           Revert
         </button>
       </div>
+      {props.currentFile && (
+        <div className="toolbar-current" title={props.currentFile}>
+          <Music size={14} aria-hidden="true" />
+          <span className="toolbar-current-name">{props.currentFile}</span>
+        </div>
+      )}
     </header>
   );
 }

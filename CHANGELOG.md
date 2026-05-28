@@ -21,6 +21,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Batch **find & replace** across a single field or all text fields, with an
   optional match-case toggle; operates on the selection, or every loaded file
   when nothing is selected (numeric fields excluded from the all-fields scope).
+- Collapsible tag-editor sidebar, so the file grid can use the full width.
+- The toolbar now shows the name of the file currently in focus.
 - Downloadable macOS (universal) and Windows installers, produced by a local
   build script (`scripts/release.sh`) — macOS built natively, Windows
   cross-compiled in a container — and published to GitHub Releases.
@@ -29,3 +31,5 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 - Replaced emoji UI glyphs with [lucide](https://lucide.dev) icons for
   consistent cross-platform rendering.
+- Track and disc numbers are now shown as a compact "Track _n_ of _n_" row in
+  the tag editor instead of four stacked fields.
