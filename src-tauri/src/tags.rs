@@ -298,7 +298,7 @@ mod tests {
         buf.extend_from_slice(&16000u32.to_le_bytes()); // byte rate
         buf.extend_from_slice(&2u16.to_le_bytes()); // block align
         buf.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
-        // data chunk
+                                                     // data chunk
         buf.extend_from_slice(b"data");
         buf.extend_from_slice(&data_len.to_le_bytes());
         buf.extend_from_slice(&sample_data);
@@ -328,7 +328,10 @@ mod tests {
             .unwrap();
 
         // Sanity: lofty can read our generated WAV.
-        assert!(lofty::read_from_path(&path).is_ok(), "generated WAV is invalid");
+        assert!(
+            lofty::read_from_path(&path).is_ok(),
+            "generated WAV is invalid"
+        );
 
         let edited = Track {
             path: path.to_string_lossy().into_owned(),
