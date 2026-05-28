@@ -32,7 +32,26 @@ cd src-tauri && cargo fmt       # format Rust
 - WMA/ASF is intentionally unsupported (lofty can't write it).
 - Editable tag fields are strings end-to-end; numeric validation is UI-side.
 
+## Keep docs in sync (definition of done)
+
+Every change must leave the Markdown docs accurate — this is part of "done",
+not a follow-up:
+
+- **CHANGELOG.md** — add an entry under `## [Unreleased]` (Keep a Changelog:
+  Added / Changed / Fixed / Removed) for any user-facing change. CI enforces
+  this: PRs that touch `src/` or `src-tauri/src/` must also update
+  `CHANGELOG.md`. For genuinely non-user-facing work (formatting, internal
+  refactors, CI tweaks), put `[skip changelog]` in the PR title.
+- **README.md** — update when capabilities, supported formats, or
+  install/build steps change. Keep it user-facing (what it is / does / how to
+  get it), not a status log.
+- **docs/adr/** — add a new numbered MADR file for notable architectural
+  decisions.
+- **This file (CLAUDE.md)** — update when commands, layout, or conventions
+  change.
+
 ## Roadmap (not yet built)
 
-Batch ops (rename↔filename, find/replace, case/cleanup, album-art writing),
-undo/redo history, virtualization tuning, online lookup, playback. See README.
+Remaining batch ops (rename↔filename, case/cleanup, album-art writing),
+undo/redo history, virtualization tuning, online lookup, playback. Batch
+find/replace is implemented. See README.

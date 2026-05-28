@@ -7,6 +7,37 @@ on:
     branches: [main]
 
 jobs:
+  changelog:
+    name: Changelog updated
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a CHANGELOG entry for source changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if printf '%s' "$TITLE" | grep -qiF '[skip changelog]'; then
+            echo "PR title opts out via [skip changelog] — skipping check."
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE" "$HEAD")
+          echo "Changed files:"; echo "$changed"
+          if printf '%s\n' "$changed" | grep -qE '^(src/|src-tauri/src/)'; then
+            if printf '%s\n' "$changed" | grep -qx 'CHANGELOG.md'; then
+              echo "CHANGELOG.md was updated."
+            else
+              echo "::error::App source changed but CHANGELOG.md was not updated. Add an entry under [Unreleased], or put [skip changelog] in the PR title for non-user-facing changes."
+              exit 1
+            fi
+          else
+            echo "No app source changes; CHANGELOG update not required."
+          fi
+
   frontend:
     name: Frontend (lint, typecheck, build)
     runs-on: ubuntu-latest
