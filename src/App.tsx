@@ -53,6 +53,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(true);
 
   // Snapshot of on-disk values, keyed by path, to detect & revert edits.
   const originals = useRef<Map<string, Track>>(new Map());
@@ -242,7 +243,11 @@ export default function App() {
     setSelected(new Set(rowsRef.current.map((r) => r.id)));
   }, []);
 
-  const activate = useCallback(() => firstFieldRef.current?.focus(), []);
+  const activate = useCallback(() => {
+    setEditorOpen(true);
+    // Focus after the panel has had a chance to render.
+    requestAnimationFrame(() => firstFieldRef.current?.focus());
+  }, []);
 
   // Cmd/Ctrl+S to save anywhere in the app.
   useEffect(() => {
@@ -257,6 +262,7 @@ export default function App() {
   }, [save]);
 
   const empty = rows.length === 0;
+  const currentFile = rows[focusIndex]?.filename;
 
   // Find & replace targets the selection, or all files when nothing is selected.
   const frTargetCount = selected.size > 0 ? selected.size : rows.length;
@@ -277,6 +283,7 @@ export default function App() {
         hasFiles={!empty}
         modifiedCount={modifiedCount}
         busy={busy}
+        currentFile={empty ? undefined : currentFile}
       />
 
       {!empty && findReplaceOpen && (
@@ -323,6 +330,8 @@ export default function App() {
               selectedRows={selectedRows}
               onFieldChange={updateField}
               firstFieldRef={firstFieldRef}
+              open={editorOpen}
+              onToggle={() => setEditorOpen((v) => !v)}
             />
           </>
         )}

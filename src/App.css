@@ -91,6 +91,26 @@ textarea {
   margin: 0 4px;
 }
 
+.toolbar-current {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.toolbar-current svg {
+  flex: 0 0 auto;
+}
+
+.toolbar-current-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 button {
   display: inline-flex;
   align-items: center;
@@ -282,10 +302,45 @@ button[aria-pressed="true"] {
   overflow-y: auto;
 }
 
+.tag-editor.is-collapsed {
+  flex: 0 0 40px;
+  width: 40px;
+  padding: 8px 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  overflow: hidden;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.panel-toggle {
+  flex: 0 0 auto;
+  padding: 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-dim);
+}
+
+.panel-toggle:hover:not(:disabled) {
+  background: var(--bg-elev);
+  border-color: var(--border);
+}
+
+.panel-head .panel-toggle {
+  margin-left: auto;
+}
+
 .panel-title {
   font-size: 13px;
   font-weight: 600;
-  margin: 0 0 10px;
+  margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -342,8 +397,22 @@ button[aria-pressed="true"] {
   resize: vertical;
 }
 
-.field-num {
-  max-width: 50%;
+/* Track/Disc rendered as "Track [n] of [n]" on a single row. */
+.pair-inputs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pair-inputs input {
+  width: 64px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pair-sep {
+  color: var(--text-dim);
+  font-size: 12px;
 }
 
 .empty-hint {
