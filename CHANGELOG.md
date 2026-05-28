@@ -26,6 +26,10 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Drag and drop files or folders onto the window to open them.
 - The app remembers the files/folders opened last and restores them on launch.
 - Double-click a cell in the file grid to edit that tag inline.
+- Right-click a file for a context menu: copy, paste, and clear tags, remove
+  files from the list (without deleting them from disk), and open an
+  **additional-tags** editor for viewing and editing any tag in the file —
+  including adding your own — beyond the common fields shown in the side panel.
 - Downloadable macOS (universal) and Windows installers, produced by a local
   build script (`scripts/release.sh`) — macOS built natively, Windows
   cross-compiled in a container — and published to GitHub Releases.

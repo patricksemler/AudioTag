@@ -506,6 +506,152 @@ button[aria-pressed="true"] {
   box-shadow: 0 8px 30px rgb(0 0 0 / 25%);
 }
 
+/* ---------- context menu ---------- */
+.context-menu {
+  z-index: 60;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgb(0 0 0 / 25%);
+  display: flex;
+  flex-direction: column;
+}
+
+.menu-item {
+  justify-content: flex-start;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 7px 10px;
+  text-align: left;
+}
+
+.menu-item:hover:not(:disabled),
+.menu-item:focus-visible {
+  background: var(--row-selected);
+  border-color: transparent;
+}
+
+.menu-item.is-danger {
+  color: var(--error);
+}
+
+/* ---------- modal (additional tags) ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 45%);
+  padding: 24px;
+}
+
+.modal {
+  width: min(640px, 100%);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-title {
+  font-size: 15px;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-subtitle {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.modal-head .panel-toggle {
+  margin-left: auto;
+}
+
+.modal-hint {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.modal-hint code {
+  background: var(--bg-elev);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.tag-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.tag-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.tag-row input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.tag-key {
+  flex: 0 0 200px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tag-value {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.add-tag {
+  align-self: flex-start;
+}
+
+.modal-warn {
+  margin: 0;
+  color: var(--modified);
+  font-size: 13px;
+}
+
+.modal-error {
+  margin: 0;
+  color: var(--error);
+  font-size: 13px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   * {

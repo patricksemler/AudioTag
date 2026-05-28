@@ -10,6 +10,8 @@ pub fn run() {
             tags::scan_paths,
             tags::save_tracks,
             tags::get_cover_art,
+            tags::read_all_tags,
+            tags::save_all_tags,
             session::load_session,
             session::save_session,
         ])

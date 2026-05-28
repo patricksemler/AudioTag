@@ -20,6 +20,9 @@ friendlier, no-cost package.
   *Multiple values* so you never overwrite data by accident.
 - **Find & replace** text across a single field or every field in your
   selection.
+- **Copy, paste and clear tags** between files from a right-click menu, and dig
+  into the full tag list — adding your own custom tags — with the additional-tags
+  editor.
 - **See your cover art.** Embedded album artwork is shown for the selected
   track.
 - **Edit safely.** Changes are staged in the app — nothing touches your files
