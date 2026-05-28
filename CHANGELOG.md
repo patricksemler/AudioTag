@@ -21,8 +21,9 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Batch **find & replace** across a single field or all text fields, with an
   optional match-case toggle; operates on the selection, or every loaded file
   when nothing is selected (numeric fields excluded from the all-fields scope).
-- Downloadable macOS (universal) and Windows installers, built automatically
-  and published to a rolling `latest` pre-release on every push to `main`.
+- Downloadable macOS (universal) and Windows installers, produced by a local
+  build script (`scripts/release.sh`) — macOS built natively, Windows
+  cross-compiled in a container — and published to GitHub Releases.
 
 ### Changed
 
