@@ -1,8 +1,8 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { TriangleAlert, Circle } from "lucide-react";
-import { GRID_COLUMNS } from "../fields";
-import type { Row } from "../types";
+import { GRID_COLUMNS, type ColumnDef } from "../fields";
+import type { EditableField, Row } from "../types";
 
 interface FileGridProps {
   rows: Row[];
@@ -14,13 +14,39 @@ interface FileGridProps {
   onSetFocus: (index: number) => void;
   onSelectAll: () => void;
   onActivate: () => void;
+  /** Commit an inline (double-click) edit of a single cell. */
+  onCellCommit: (id: string, field: EditableField, value: string) => void;
 }
 
 const ROW_HEIGHT = 30;
+const NUMERIC_COLS = new Set<EditableField>(["track", "year"]);
 
 export function FileGrid(props: FileGridProps) {
   const { rows, selected, focusIndex } = props;
   const parentRef = useRef<HTMLDivElement>(null);
+
+  // Inline editing: which cell (row id + column) is open, plus its draft value.
+  const [editing, setEditing] = useState<{ id: string; key: EditableField } | null>(null);
+  const [draft, setDraft] = useState("");
+  const editRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing && editRef.current) {
+      editRef.current.focus();
+      editRef.current.select();
+    }
+  }, [editing]);
+
+  function beginEdit(row: Row, col: ColumnDef) {
+    setDraft(row[col.key] ?? "");
+    setEditing({ id: row.id, key: col.key });
+  }
+
+  function commitEdit() {
+    if (!editing) return;
+    props.onCellCommit(editing.id, editing.key, draft);
+    setEditing(null);
+  }
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -164,16 +190,49 @@ export function FileGrid(props: FileGridProps) {
                 </span>
                 {GRID_COLUMNS.map((col) => {
                   const value = row[col.key] ?? "";
-                  const isNum = col.key === "track" || col.key === "year";
+                  const isNum = NUMERIC_COLS.has(col.key);
+                  const isEditing = editing?.id === row.id && editing.key === col.key;
                   return (
+                    // Cells aren't individually focusable by design (the grid uses
+                    // the aria-activedescendant pattern with one tab-stop on the
+                    // container). Double-click to edit is a pointer-only enhancement.
+                    // eslint-disable-next-line jsx-a11y/interactive-supports-focus
                     <span
                       key={col.key}
                       role="gridcell"
-                      className={`cell ${isNum ? "cell-num" : ""}`}
+                      className={`cell ${isNum ? "cell-num" : ""}${isEditing ? " is-editing" : ""}`}
                       style={{ width: col.width }}
-                      title={value || undefined}
+                      title={isEditing ? undefined : value || undefined}
+                      onDoubleClick={() => !row.error && beginEdit(row, col)}
                     >
-                      {value || (col.key === "title" ? row.filename : "")}
+                      {isEditing ? (
+                        <input
+                          ref={editRef}
+                          className="cell-edit"
+                          value={draft}
+                          aria-label={`Edit ${col.label}`}
+                          inputMode={isNum ? "numeric" : "text"}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onChange={(e) => {
+                            let v = e.target.value;
+                            if (isNum) v = v.replace(/[^0-9]/g, "");
+                            setDraft(v);
+                          }}
+                          onKeyDown={(e) => {
+                            e.stopPropagation();
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              commitEdit();
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              setEditing(null);
+                            }
+                          }}
+                          onBlur={commitEdit}
+                        />
+                      ) : (
+                        value || (col.key === "title" ? row.filename : "")
+                      )}
                     </span>
                   );
                 })}

@@ -172,6 +172,19 @@ export default function App() {
     [selected],
   );
 
+  // Edit a single row's field (used by inline double-click editing in the grid).
+  const editCell = useCallback((id: string, field: EditableField, value: string) => {
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        const updated = { ...r, [field]: value };
+        const orig = originals.current.get(r.id);
+        updated.modified = orig ? isModified(updated, orig) : true;
+        return updated;
+      }),
+    );
+  }, []);
+
   // ----- batch find & replace -----
   // Operates on the current selection, or every loaded file when nothing is selected.
   const findReplace = useCallback(
@@ -379,6 +392,7 @@ export default function App() {
                 onSetFocus={setFocusIndex}
                 onSelectAll={selectAll}
                 onActivate={activate}
+                onCellCommit={editCell}
               />
             </section>
             <TagEditor
