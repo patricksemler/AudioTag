@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { TriangleAlert, Circle } from "lucide-react";
 import { GRID_COLUMNS } from "../fields";
 import type { Row } from "../types";
 
@@ -150,12 +151,12 @@ export function FileGrid(props: FileGridProps) {
               >
                 <span className="cell cell-status" role="gridcell">
                   {row.error ? (
-                    <span title={row.error} aria-label="Error reading file">
-                      ⚠
+                    <span title={row.error} aria-label="Error reading file" role="img">
+                      <TriangleAlert size={14} aria-hidden="true" />
                     </span>
                   ) : row.modified ? (
-                    <span title="Unsaved changes" aria-label="Unsaved changes">
-                      ●
+                    <span title="Unsaved changes" aria-label="Unsaved changes" role="img">
+                      <Circle size={9} fill="currentColor" aria-hidden="true" />
                     </span>
                   ) : (
                     ""

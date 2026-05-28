@@ -1,3 +1,5 @@
+import { Circle } from "lucide-react";
+
 interface StatusBarProps {
   total: number;
   selected: number;
@@ -14,7 +16,9 @@ export function StatusBar({ total, selected, modified, message }: StatusBarProps
       {modified > 0 && (
         <>
           <span>·</span>
-          <span className="status-modified">{modified} unsaved ●</span>
+          <span className="status-modified">
+            <Circle size={8} fill="currentColor" aria-hidden="true" /> {modified} unsaved
+          </span>
         </>
       )}
       {/* Live region announces async results to screen readers. */}

@@ -92,6 +92,9 @@ textarea {
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -188,7 +191,9 @@ button.primary {
 
 .cell-status {
   width: 28px;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--modified);
 }
 
@@ -293,6 +298,9 @@ button.primary {
 }
 
 .status-modified {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--modified);
 }
 
@@ -309,6 +317,9 @@ button.primary {
 }
 
 .welcome h1 {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   color: var(--text);
 }
 

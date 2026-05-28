@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Music } from "lucide-react";
 import "./App.css";
 import { pickFiles, pickFolder, saveTracks, scanPaths } from "./api";
 import { FileGrid } from "./components/FileGrid";
@@ -193,7 +194,9 @@ export default function App() {
       <main className="workspace">
         {empty ? (
           <div className="welcome">
-            <h1>🎵 AudioTag</h1>
+            <h1>
+              <Music size={28} aria-hidden="true" /> AudioTag
+            </h1>
             <p>Open a folder or files to start editing tags.</p>
             <div className="welcome-actions">
               <button type="button" className="primary" onClick={openFolder} disabled={busy}>
