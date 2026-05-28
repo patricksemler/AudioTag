@@ -35,6 +35,19 @@ We use **GitHub Flow**:
 
 Keep PRs small and focused (ideally < ~400 lines changed).
 
+## Documentation
+
+Keeping docs current is part of "done":
+
+- **Update [CHANGELOG.md](CHANGELOG.md)** under `## [Unreleased]` for any
+  user-facing change (Keep a Changelog format). CI **enforces** this for PRs
+  that modify `src/` or `src-tauri/src/`. For non-user-facing work (formatting,
+  internal refactors, CI), add `[skip changelog]` to the PR title.
+- **Update [README.md](README.md)** when capabilities, supported formats, or
+  install/build instructions change.
+- **Add an ADR** in [`docs/adr/`](docs/adr/) for notable architectural
+  decisions.
+
 ## Quality bar
 
 - **Frontend:** `pnpm typecheck` and `pnpm lint` must pass.
