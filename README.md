@@ -11,8 +11,9 @@ friendlier, no-cost package.
 
 ## What it does
 
-- **Edit one file or thousands.** Open a folder (scanned recursively) or pick
-  individual files, then edit them in a spreadsheet-style grid.
+- **Edit one file or thousands.** Open a folder (scanned recursively), pick
+  individual files, or drag them straight onto the window, then edit them in a
+  spreadsheet-style grid. AudioTag reopens whatever you had loaded last time.
 - **Edit many files at once.** Select multiple tracks and change a field for all
   of them together. Fields that differ across the selection show as
   *Multiple values* so you never overwrite data by accident.

@@ -23,6 +23,8 @@ adheres to [Semantic Versioning](https://semver.org/).
   when nothing is selected (numeric fields excluded from the all-fields scope).
 - Collapsible tag-editor sidebar, so the file grid can use the full width.
 - The toolbar now shows the name of the file currently in focus.
+- Drag and drop files or folders onto the window to open them.
+- The app remembers the files/folders opened last and restores them on launch.
 - Downloadable macOS (universal) and Windows installers, produced by a local
   build script (`scripts/release.sh`) — macOS built natively, Windows
   cross-compiled in a container — and published to GitHub Releases.
