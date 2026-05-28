@@ -1,10 +1,13 @@
-import { FolderOpen, Files, Save } from "lucide-react";
+import { FolderOpen, Files, Save, Replace } from "lucide-react";
 
 interface ToolbarProps {
   onOpenFolder: () => void;
   onOpenFiles: () => void;
   onSave: () => void;
   onRevert: () => void;
+  onToggleFindReplace: () => void;
+  findReplaceActive: boolean;
+  hasFiles: boolean;
   modifiedCount: number;
   busy: boolean;
 }
@@ -19,6 +22,17 @@ export function Toolbar(props: ToolbarProps) {
         </button>
         <button type="button" onClick={props.onOpenFiles} disabled={props.busy}>
           <Files size={16} aria-hidden="true" /> Open Files
+        </button>
+      </div>
+      <div className="toolbar-sep" role="separator" aria-orientation="vertical" />
+      <div className="toolbar-group">
+        <button
+          type="button"
+          onClick={props.onToggleFindReplace}
+          disabled={!props.hasFiles || props.busy}
+          aria-pressed={props.findReplaceActive}
+        >
+          <Replace size={16} aria-hidden="true" /> Find &amp; Replace
         </button>
       </div>
       <div className="toolbar-sep" role="separator" aria-orientation="vertical" />
