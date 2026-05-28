@@ -57,6 +57,26 @@ Keeping docs current is part of "done":
   keyboard-operable and screen-reader friendly (test with VoiceOver on macOS
   or NVDA on Windows).
 
+## Releasing
+
+Installers are built locally and uploaded to GitHub Releases with one script:
+
+```bash
+scripts/release.sh            # build only → artifacts in dist-release/
+UPLOAD=1 scripts/release.sh   # build and publish to a GitHub Release
+```
+
+- **macOS** (`.dmg`, universal) is built natively, so run the script **on a
+  Mac** to produce the macOS build.
+- **Windows** (`-setup.exe`, NSIS) is cross-compiled in a Linux container via
+  [`cargo-xwin`](https://github.com/rust-cross/cargo-xwin); it only needs
+  Docker. MSI installers can't be cross-compiled (WiX is Windows-only), so we
+  ship the NSIS installer.
+- Builds are unsigned; users may see an OS warning on first launch.
+
+The release tag defaults to `v<version>` from `package.json`; pass a different
+tag as the first argument.
+
 ## Architecture decisions
 
 Significant decisions are recorded as ADRs in [`docs/adr/`](docs/adr/) using

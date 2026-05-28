@@ -1,0 +1,9 @@
+# Keep the build context small and avoid copying host (macOS/ARM) build output
+# into the Linux container, which would conflict with the cross-compile.
+.git
+node_modules
+dist
+dist-release
+src-tauri/target
+src-tauri/gen
+target

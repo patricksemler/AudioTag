@@ -14,7 +14,14 @@ pnpm lint                 # eslint (includes jsx-a11y)
 cd src-tauri && cargo check     # compile-check Rust
 cd src-tauri && cargo clippy    # lint Rust
 cd src-tauri && cargo fmt       # format Rust
+
+scripts/release.sh              # build installers locally (mac native + win container)
+UPLOAD=1 scripts/release.sh     # …and publish to a GitHub Release
 ```
+
+Releases are built locally, not in CI: macOS natively, Windows cross-compiled
+in a Linux container (`build/windows.Dockerfile`, NSIS only — WiX/MSI can't
+cross-compile). Run on a Mac to get the macOS build.
 
 ## Layout
 
