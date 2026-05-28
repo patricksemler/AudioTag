@@ -40,6 +40,24 @@ export interface CoverArt {
   base64: string;
 }
 
+/** A raw tag item (format-native key + text value) for the additional-tags editor. */
+export interface TagItemDto {
+  key: string;
+  value: string;
+}
+
+/** The full set of editable tag items for one file. */
+export interface AllTags {
+  tag_type: string;
+  items: TagItemDto[];
+}
+
+/** Outcome of writing arbitrary tags: keys not supported by the file's format. */
+export interface SaveAllResult {
+  ok: boolean;
+  skipped: string[];
+}
+
 /** The editable tag fields (everything except read-only metadata). */
 export type EditableField =
   | "title"

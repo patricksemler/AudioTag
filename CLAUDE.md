@@ -60,5 +60,12 @@ not a follow-up:
 ## Roadmap (not yet built)
 
 Remaining batch ops (rename↔filename, case/cleanup, album-art writing),
-undo/redo history, virtualization tuning, online lookup, playback. Batch
-find/replace is implemented. See README.
+undo/redo history, virtualization tuning, online lookup, playback. Done so far:
+batch find/replace, drag-and-drop + session restore, inline grid editing, and a
+right-click menu with copy/paste/clear/remove plus an additional-tags editor.
+See README.
+
+Note: the additional-tags editor operates on lofty's generic `Tag`, so it can
+edit/add any of lofty's recognized keys (keyed by their format-native names).
+Truly free-form keys a format doesn't recognize are reported as skipped on save
+rather than written. See `docs/adr/0004-arbitrary-tag-editing.md`.

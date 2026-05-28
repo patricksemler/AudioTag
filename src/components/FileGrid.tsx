@@ -16,6 +16,8 @@ interface FileGridProps {
   onActivate: () => void;
   /** Commit an inline (double-click) edit of a single cell. */
   onCellCommit: (id: string, field: EditableField, value: string) => void;
+  /** Open the right-click context menu for the row at `index`. */
+  onContextMenu: (index: number, x: number, y: number) => void;
 }
 
 const ROW_HEIGHT = 30;
@@ -107,6 +109,7 @@ export function FileGrid(props: FileGridProps) {
   }
 
   function handleRowClick(e: React.MouseEvent, index: number) {
+    if (e.button === 2) return; // right-click is handled via onContextMenu
     if (e.shiftKey) props.onRange(index);
     else if (e.metaKey || e.ctrlKey) props.onToggle(index);
     else props.onSelectSingle(index);
@@ -174,6 +177,10 @@ export function FileGrid(props: FileGridProps) {
                   transform: `translateY(${vi.start}px)`,
                 }}
                 onMouseDown={(e) => handleRowClick(e, vi.index)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  props.onContextMenu(vi.index, e.clientX, e.clientY);
+                }}
               >
                 <span className="cell cell-status" role="gridcell">
                   {row.error ? (

@@ -7,7 +7,7 @@
 use base64::Engine;
 use lofty::config::WriteOptions;
 use lofty::prelude::*;
-use lofty::tag::{ItemKey, Tag};
+use lofty::tag::{ItemKey, ItemValue, Tag, TagItem};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use walkdir::WalkDir;
@@ -85,6 +85,30 @@ pub struct SaveResult {
 pub struct CoverArt {
     pub mime: String,
     pub base64: String,
+}
+
+/// A single raw tag item (format-native key + text value) for the
+/// "additional tags" editor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagItemDto {
+    pub key: String,
+    pub value: String,
+}
+
+/// The full set of editable tag items for one file.
+#[derive(Debug, Clone, Serialize)]
+pub struct AllTags {
+    /// Human-readable tag format (e.g. "Id3v2", "VorbisComments").
+    pub tag_type: String,
+    pub items: Vec<TagItemDto>,
+}
+
+/// Outcome of writing arbitrary tags: which keys couldn't be stored in this
+/// format (i.e. not recognized for the file's tag type).
+#[derive(Debug, Clone, Serialize)]
+pub struct SaveAllResult {
+    pub ok: bool,
+    pub skipped: Vec<String>,
 }
 
 fn file_name(path: &Path) -> String {
@@ -273,6 +297,88 @@ pub fn get_cover_art(path: String) -> Option<CoverArt> {
     Some(CoverArt { mime, base64 })
 }
 
+/// Read every text/locator tag item from a file, keyed by its format-native
+/// name (e.g. "TITLE", "MUSICBRAINZ_ARTISTID"). Binary items (cover art etc.)
+/// are skipped. This backs the "additional tags" editor.
+#[tauri::command]
+pub fn read_all_tags(path: String) -> Result<AllTags, String> {
+    let p = Path::new(&path);
+    let tagged = lofty::read_from_path(p).map_err(|e| e.to_string())?;
+
+    let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
+        return Ok(AllTags {
+            tag_type: format!("{:?}", tagged.primary_tag_type()),
+            items: Vec::new(),
+        });
+    };
+
+    let tt = tag.tag_type();
+    let mut items = Vec::new();
+    for item in tag.items() {
+        let Some(key) = item.key().map_key(tt) else {
+            continue; // no format-native name → not editable here
+        };
+        let value = match item.value() {
+            ItemValue::Text(t) | ItemValue::Locator(t) => t.clone(),
+            ItemValue::Binary(_) => continue,
+        };
+        items.push(TagItemDto {
+            key: key.to_string(),
+            value,
+        });
+    }
+
+    Ok(AllTags {
+        tag_type: format!("{:?}", tt),
+        items,
+    })
+}
+
+/// Replace a file's text/locator tag items with the supplied set, preserving
+/// pictures and any binary items. Keys not recognized for the file's tag type
+/// are skipped and reported. Empty values are dropped (i.e. clear the key).
+#[tauri::command]
+pub fn save_all_tags(path: String, items: Vec<TagItemDto>) -> Result<SaveAllResult, String> {
+    let p = Path::new(&path);
+    let tagged = lofty::read_from_path(p).map_err(|e| e.to_string())?;
+
+    let tag_type = tagged
+        .primary_tag()
+        .map(|t| t.tag_type())
+        .unwrap_or_else(|| tagged.primary_tag_type());
+
+    let mut tag = Tag::new(tag_type);
+
+    // Preserve pictures and binary items that this editor doesn't touch.
+    if let Some(old) = tagged.primary_tag() {
+        for pic in old.pictures() {
+            tag.push_picture(pic.clone());
+        }
+        for item in old.items() {
+            if matches!(item.value(), ItemValue::Binary(_)) {
+                tag.push_unchecked(item.clone());
+            }
+        }
+    }
+
+    let mut skipped = Vec::new();
+    for dto in items {
+        let value = dto.value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match ItemKey::from_key(tag_type, &dto.key) {
+            Some(key) => tag.push_unchecked(TagItem::new(key, ItemValue::Text(value.to_string()))),
+            None => skipped.push(dto.key),
+        }
+    }
+
+    tag.save_to_path(p, WriteOptions::default())
+        .map_err(|e| e.to_string())?;
+
+    Ok(SaveAllResult { ok: true, skipped })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,6 +479,63 @@ mod tests {
         let read_again = read_track(&path);
         assert_eq!(read_again.genre, None, "empty value should clear the tag");
         assert_eq!(read_again.title.as_deref(), Some("My Title"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn additional_tags_roundtrip_and_skip() {
+        let path = temp_wav_path();
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&minimal_wav())
+            .unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+
+        // Seed a title so the file has a tag; discover the format-native key
+        // name for it (varies by tag type) so the test is format-agnostic.
+        write_track(&Track {
+            title: Some("Seed".into()),
+            ..read_track(&path)
+        })
+        .expect("seed write should succeed");
+
+        let seeded = read_all_tags(path_str.clone()).expect("read_all_tags should succeed");
+        let title_key = seeded
+            .items
+            .iter()
+            .find(|i| i.value == "Seed")
+            .map(|i| i.key.clone())
+            .expect("seeded title item should be present");
+
+        let result = save_all_tags(
+            path_str.clone(),
+            vec![
+                TagItemDto {
+                    key: title_key.clone(),
+                    value: "Hello".into(),
+                },
+                TagItemDto {
+                    key: "TOTALLY_MADE_UP".into(),
+                    value: "x".into(),
+                },
+            ],
+        )
+        .expect("save_all_tags should succeed");
+        assert!(result.ok);
+        assert_eq!(
+            result.skipped,
+            vec!["TOTALLY_MADE_UP".to_string()],
+            "unrecognized keys should be reported as skipped"
+        );
+
+        let all = read_all_tags(path_str).expect("read_all_tags should succeed");
+        assert!(
+            all.items
+                .iter()
+                .any(|i| i.key == title_key && i.value == "Hello"),
+            "recognized key should round-trip"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

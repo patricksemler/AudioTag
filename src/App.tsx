@@ -3,6 +3,8 @@ import { Music } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
 import { loadSession, pickFiles, pickFolder, saveSession, saveTracks, scanPaths } from "./api";
+import { AdditionalTags } from "./components/AdditionalTags";
+import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { FileGrid } from "./components/FileGrid";
 import { FindReplace, type FindReplaceOptions } from "./components/FindReplace";
 import { StatusBar } from "./components/StatusBar";
@@ -56,6 +58,12 @@ export default function App() {
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(true);
   const [dragOver, setDragOver] = useState(false);
+  // Right-click menu position + target row; the file open in the additional-tags editor.
+  const [menu, setMenu] = useState<{ x: number; y: number; rowId: string } | null>(null);
+  const [additionalFor, setAdditionalFor] = useState<{ path: string; filename: string } | null>(
+    null,
+  );
+  const [clipboardFilled, setClipboardFilled] = useState(false);
 
   // Snapshot of on-disk values, keyed by path, to detect & revert edits.
   const originals = useRef<Map<string, Track>>(new Map());
@@ -67,6 +75,8 @@ export default function App() {
   const firstFieldRef = useRef<HTMLInputElement | null>(null);
   // Source paths (folders/files) the user has opened, for session restore.
   const sources = useRef<string[]>([]);
+  // Snapshot of editable fields from a "Copy tags" action, for "Paste tags".
+  const tagClipboard = useRef<Record<EditableField, string> | null>(null);
 
   const selectedRows = useMemo(() => rows.filter((r) => selected.has(r.id)), [rows, selected]);
   const modifiedCount = useMemo(() => rows.filter((r) => r.modified).length, [rows]);
@@ -183,6 +193,85 @@ export default function App() {
         return updated;
       }),
     );
+  }, []);
+
+  // ----- right-click context menu actions -----
+  const openMenu = useCallback(
+    (index: number, x: number, y: number) => {
+      const row = rowsRef.current[index];
+      if (!row) return;
+      // Right-clicking outside the current selection selects just that row.
+      if (!selected.has(row.id)) {
+        setSelected(new Set([row.id]));
+        setFocusIndex(index);
+        anchor.current = index;
+      }
+      setMenu({ x, y, rowId: row.id });
+    },
+    [selected],
+  );
+
+  const removeSelected = useCallback(() => {
+    const ids = new Set(selected);
+    if (ids.size === 0) return;
+    const next = rowsRef.current.filter((r) => !ids.has(r.id));
+    ids.forEach((id) => originals.current.delete(id));
+    setRows(next);
+    setSelected(new Set());
+    setFocusIndex((fi) => Math.max(0, Math.min(fi, next.length - 1)));
+    setMessage(`Removed ${ids.size} file${ids.size === 1 ? "" : "s"} from the list`);
+  }, [selected]);
+
+  const copyTags = useCallback((id: string) => {
+    const row = rowsRef.current.find((r) => r.id === id);
+    if (!row) return;
+    const snap = {} as Record<EditableField, string>;
+    for (const f of EDITABLE_FIELDS) snap[f] = row[f] ?? "";
+    tagClipboard.current = snap;
+    setClipboardFilled(true);
+    setMessage(`Copied tags from ${row.filename}`);
+  }, []);
+
+  const pasteTags = useCallback(() => {
+    const snap = tagClipboard.current;
+    if (!snap) return;
+    setRows((prev) =>
+      prev.map((r) => {
+        if (!selected.has(r.id)) return r;
+        const updated = { ...r, ...snap };
+        const orig = originals.current.get(r.id);
+        updated.modified = orig ? isModified(updated, orig) : true;
+        return updated;
+      }),
+    );
+    setMessage(`Pasted tags into ${selected.size} file${selected.size === 1 ? "" : "s"}`);
+  }, [selected]);
+
+  const clearTags = useCallback(() => {
+    setRows((prev) =>
+      prev.map((r) => {
+        if (!selected.has(r.id)) return r;
+        const cleared = { ...r };
+        for (const f of EDITABLE_FIELDS) cleared[f] = "";
+        const orig = originals.current.get(r.id);
+        cleared.modified = orig ? isModified(cleared, orig) : true;
+        return cleared;
+      }),
+    );
+    setMessage(`Cleared tags on ${selected.size} file${selected.size === 1 ? "" : "s"}`);
+  }, [selected]);
+
+  // After editing additional tags, re-scan that file so its row reflects disk.
+  const refreshRow = useCallback(async (path: string) => {
+    try {
+      const [track] = await scanPaths([path]);
+      if (!track) return;
+      const fresh = toRow(track);
+      originals.current.set(path, { ...fresh });
+      setRows((prev) => prev.map((r) => (r.id === path ? fresh : r)));
+    } catch {
+      /* ignore — keep the existing row */
+    }
   }, []);
 
   // ----- batch find & replace -----
@@ -327,6 +416,44 @@ export default function App() {
   const empty = rows.length === 0;
   const currentFile = rows[focusIndex]?.filename;
 
+  // Build the right-click menu for the targeted row.
+  const menuItems: MenuItem[] = useMemo(() => {
+    if (!menu) return [];
+    const targetRow = rows.find((r) => r.id === menu.rowId);
+    const selCount = selected.size;
+    const plural = selCount === 1 ? "" : "s";
+    return [
+      {
+        label: "Edit additional tags…",
+        disabled: !targetRow || !!targetRow.error,
+        onSelect: () => {
+          if (targetRow) setAdditionalFor({ path: targetRow.path, filename: targetRow.filename });
+        },
+      },
+      {
+        label: "Copy tags",
+        separatorBefore: true,
+        disabled: !targetRow,
+        onSelect: () => copyTags(menu.rowId),
+      },
+      {
+        label: `Paste tags${selCount > 1 ? ` (${selCount})` : ""}`,
+        disabled: !clipboardFilled,
+        onSelect: pasteTags,
+      },
+      {
+        label: `Clear tags${selCount > 1 ? ` (${selCount})` : ""}`,
+        onSelect: clearTags,
+      },
+      {
+        label: `Remove ${selCount} file${plural} from list`,
+        separatorBefore: true,
+        danger: true,
+        onSelect: removeSelected,
+      },
+    ];
+  }, [menu, rows, selected, clipboardFilled, copyTags, pasteTags, clearTags, removeSelected]);
+
   // Find & replace targets the selection, or all files when nothing is selected.
   const frTargetCount = selected.size > 0 ? selected.size : rows.length;
   const frScopeLabel =
@@ -393,6 +520,7 @@ export default function App() {
                 onSelectAll={selectAll}
                 onActivate={activate}
                 onCellCommit={editCell}
+                onContextMenu={openMenu}
               />
             </section>
             <TagEditor
@@ -412,6 +540,19 @@ export default function App() {
         modified={modifiedCount}
         message={message}
       />
+
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+      )}
+
+      {additionalFor && (
+        <AdditionalTags
+          path={additionalFor.path}
+          filename={additionalFor.filename}
+          onClose={() => setAdditionalFor(null)}
+          onSaved={(p) => void refreshRow(p)}
+        />
+      )}
     </div>
   );
 }

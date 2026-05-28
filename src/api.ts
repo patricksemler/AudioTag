@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { CoverArt, SaveResult, Track } from "./types";
+import type { AllTags, CoverArt, SaveAllResult, SaveResult, TagItemDto, Track } from "./types";
 
 /** Open a native folder picker; returns the chosen directory or null. */
 export async function pickFolder(): Promise<string | null> {
@@ -42,6 +42,16 @@ export function saveTracks(tracks: Track[]): Promise<SaveResult[]> {
 /** Lazily fetch embedded cover art for one file. */
 export function getCoverArt(path: string): Promise<CoverArt | null> {
   return invoke<CoverArt | null>("get_cover_art", { path });
+}
+
+/** Read every editable tag item from a file (for the additional-tags editor). */
+export function readAllTags(path: string): Promise<AllTags> {
+  return invoke<AllTags>("read_all_tags", { path });
+}
+
+/** Replace a file's text tag items; returns any keys the format couldn't store. */
+export function saveAllTags(path: string, items: TagItemDto[]): Promise<SaveAllResult> {
+  return invoke<SaveAllResult>("save_all_tags", { path, items });
 }
 
 /** Return the source paths opened in the last session (empty if none). */
