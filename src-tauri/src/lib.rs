@@ -1,3 +1,4 @@
+mod session;
 mod tags;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -9,6 +10,8 @@ pub fn run() {
             tags::scan_paths,
             tags::save_tracks,
             tags::get_cover_art,
+            session::load_session,
+            session::save_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

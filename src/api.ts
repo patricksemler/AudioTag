@@ -43,3 +43,13 @@ export function saveTracks(tracks: Track[]): Promise<SaveResult[]> {
 export function getCoverArt(path: string): Promise<CoverArt | null> {
   return invoke<CoverArt | null>("get_cover_art", { path });
 }
+
+/** Return the source paths opened in the last session (empty if none). */
+export function loadSession(): Promise<string[]> {
+  return invoke<string[]>("load_session");
+}
+
+/** Persist the source paths so they can be restored on the next launch. */
+export function saveSession(paths: string[]): Promise<void> {
+  return invoke("save_session", { paths });
+}

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Music } from "lucide-react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
-import { pickFiles, pickFolder, saveTracks, scanPaths } from "./api";
+import { loadSession, pickFiles, pickFolder, saveSession, saveTracks, scanPaths } from "./api";
 import { FileGrid } from "./components/FileGrid";
 import { FindReplace, type FindReplaceOptions } from "./components/FindReplace";
 import { StatusBar } from "./components/StatusBar";
@@ -54,6 +55,7 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(true);
+  const [dragOver, setDragOver] = useState(false);
 
   // Snapshot of on-disk values, keyed by path, to detect & revert edits.
   const originals = useRef<Map<string, Track>>(new Map());
@@ -63,14 +65,19 @@ export default function App() {
   // Anchor for shift-range selection.
   const anchor = useRef(0);
   const firstFieldRef = useRef<HTMLInputElement | null>(null);
+  // Source paths (folders/files) the user has opened, for session restore.
+  const sources = useRef<string[]>([]);
 
   const selectedRows = useMemo(() => rows.filter((r) => selected.has(r.id)), [rows, selected]);
   const modifiedCount = useMemo(() => rows.filter((r) => r.modified).length, [rows]);
 
   // ----- loading -----
-  const loadPaths = useCallback(async (paths: string[]) => {
+  // `remember` controls whether the input paths are added to the persisted
+  // session (false when we're restoring that very session on startup).
+  const loadPaths = useCallback(async (paths: string[], remember = true) => {
+    if (paths.length === 0) return;
     setBusy(true);
-    setMessage("Scanning…");
+    setMessage(remember ? "Scanning…" : "Restoring last session…");
     try {
       const tracks = await scanPaths(paths);
       const existing = new Set(rowsRef.current.map((r) => r.id));
@@ -84,6 +91,17 @@ export default function App() {
         setFocusIndex(0);
         anchor.current = 0;
       }
+
+      // Track the source paths for session restore.
+      let sourcesChanged = false;
+      for (const p of paths) {
+        if (!sources.current.includes(p)) {
+          sources.current.push(p);
+          sourcesChanged = true;
+        }
+      }
+      if (remember && sourcesChanged) void saveSession(sources.current);
+
       setMessage(
         additions.length === tracks.length
           ? `Loaded ${additions.length} files`
@@ -95,6 +113,38 @@ export default function App() {
       setBusy(false);
     }
   }, []);
+
+  // ----- session restore (once, on startup) -----
+  const didRestore = useRef(false);
+  useEffect(() => {
+    if (didRestore.current) return;
+    didRestore.current = true;
+    void loadSession()
+      .then((paths) => {
+        if (paths.length) void loadPaths(paths, false);
+      })
+      .catch(() => {
+        /* no saved session — start empty */
+      });
+  }, [loadPaths]);
+
+  // ----- drag & drop files/folders onto the window -----
+  useEffect(() => {
+    const unlisten = getCurrentWebview().onDragDropEvent((event) => {
+      const p = event.payload;
+      if (p.type === "over" || p.type === "enter") {
+        setDragOver(true);
+      } else if (p.type === "drop") {
+        setDragOver(false);
+        if (p.paths.length) void loadPaths(p.paths);
+      } else {
+        setDragOver(false);
+      }
+    });
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [loadPaths]);
 
   const openFolder = useCallback(async () => {
     const dir = await pickFolder();
@@ -273,6 +323,11 @@ export default function App() {
 
   return (
     <div className="app">
+      {dragOver && (
+        <div className="drop-overlay" aria-hidden="true">
+          <div className="drop-overlay-card">Drop files or folders to open</div>
+        </div>
+      )}
       <Toolbar
         onOpenFolder={openFolder}
         onOpenFiles={openFiles}
@@ -301,7 +356,7 @@ export default function App() {
             <h1>
               <Music size={28} aria-hidden="true" /> AudioTag
             </h1>
-            <p>Open a folder or files to start editing tags.</p>
+            <p>Open a folder or files — or drag them here — to start editing tags.</p>
             <div className="welcome-actions">
               <button type="button" className="primary" onClick={openFolder} disabled={busy}>
                 Open Folder
