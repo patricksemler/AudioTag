@@ -1,3 +1,5 @@
+import { FolderOpen, Files, Save } from "lucide-react";
+
 interface ToolbarProps {
   onOpenFolder: () => void;
   onOpenFiles: () => void;
@@ -13,10 +15,10 @@ export function Toolbar(props: ToolbarProps) {
     <header className="toolbar" role="toolbar" aria-label="Main actions">
       <div className="toolbar-group">
         <button type="button" onClick={props.onOpenFolder} disabled={props.busy}>
-          <span aria-hidden="true">📂</span> Open Folder
+          <FolderOpen size={16} aria-hidden="true" /> Open Folder
         </button>
         <button type="button" onClick={props.onOpenFiles} disabled={props.busy}>
-          <span aria-hidden="true">📄</span> Open Files
+          <Files size={16} aria-hidden="true" /> Open Files
         </button>
       </div>
       <div className="toolbar-sep" role="separator" aria-orientation="vertical" />
@@ -27,7 +29,7 @@ export function Toolbar(props: ToolbarProps) {
           onClick={props.onSave}
           disabled={!hasChanges || props.busy}
         >
-          <span aria-hidden="true">💾</span> Save
+          <Save size={16} aria-hidden="true" /> Save
           {hasChanges ? ` (${props.modifiedCount})` : ""}
         </button>
         <button type="button" onClick={props.onRevert} disabled={!hasChanges || props.busy}>
