@@ -335,6 +335,41 @@ fn collect_audio_files(paths: &[String]) -> Vec<std::path::PathBuf> {
 /// client. Balances first-paint latency against React update spam. PLAN.md §5.3.
 const SCAN_BATCH: usize = 200;
 
+/// Upper bound on reader threads. Conservative so a single spinning disk can't
+/// thrash and memory stays bounded (each in-flight read may briefly hold one
+/// file's cover). PLAN.md §5.2.
+const MAX_SCAN_WORKERS: usize = 8;
+
+/// Reader-thread count for this machine: `min(cores, MAX_SCAN_WORKERS)`.
+fn scan_workers() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(MAX_SCAN_WORKERS)
+}
+
+/// Read a slice of files into `Track`s, preserving input order. Reads in
+/// parallel across up to `workers` threads by splitting into contiguous chunks
+/// (so reassembly is just concatenation — byte-identical to a sequential read).
+/// Falls back to sequential for tiny slices or a single worker. PLAN.md §5.2.
+fn read_slice(files: &[std::path::PathBuf], workers: usize) -> Vec<Track> {
+    let n = files.len();
+    if workers <= 1 || n <= 1 {
+        return files.iter().map(|p| read_track(p)).collect();
+    }
+    let chunk = n.div_ceil(workers.min(n));
+    std::thread::scope(|s| {
+        let handles: Vec<_> = files
+            .chunks(chunk)
+            .map(|sub| s.spawn(move || sub.iter().map(|p| read_track(p)).collect::<Vec<Track>>()))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect()
+    })
+}
+
 /// A streamed-scan event sent over the per-operation [`Channel`]. Errored files
 /// are folded into batches (as errored `Track`s) exactly as the non-streamed
 /// scan returns them, so the two paths stay byte-for-byte equivalent.
@@ -383,6 +418,14 @@ pub fn cancel_operation(operation_id: String, registry: tauri::State<OpRegistry>
     registry.request_cancel(&operation_id);
 }
 
+/// Bench-only: collect + read with an explicit worker count, for the
+/// sequential-vs-parallel A/B. Not a stable API.
+#[doc(hidden)]
+pub fn scan_files_for_bench(paths: &[String], workers: usize) -> Vec<Track> {
+    let files = collect_audio_files(paths);
+    read_slice(&files, workers)
+}
+
 /// Scan the given paths (files or folders) and return tag models for every
 /// audio file found. Folders are walked recursively. Results are sorted by path.
 #[tauri::command]
@@ -393,7 +436,7 @@ pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
     let walk_ms = t_walk.elapsed().as_secs_f64() * 1e3;
 
     let t_read = std::time::Instant::now();
-    let tracks: Vec<Track> = files.iter().map(|p| read_track(p)).collect();
+    let tracks: Vec<Track> = read_slice(&files, scan_workers());
     let read_ms = t_read.elapsed().as_secs_f64() * 1e3;
 
     if timing {
@@ -434,6 +477,7 @@ pub fn scan_paths_streamed(
 /// Channel-free so it can be unit-tested directly (`cancellation_stops_scan`).
 fn read_in_batches(
     files: &[std::path::PathBuf],
+    workers: usize,
     cancel: &AtomicBool,
     mut on_batch: impl FnMut(Vec<Track>, usize, usize) -> Result<(), String>,
 ) -> Result<bool, String> {
@@ -443,7 +487,10 @@ fn read_in_batches(
         if cancel.load(Ordering::Relaxed) {
             return Ok(false);
         }
-        let tracks: Vec<Track> = chunk.iter().map(|p| read_track(p)).collect();
+        // Read each batch in parallel (bounded workers); only one batch's worth
+        // of tracks is resident at a time, so peak memory stays bounded even on
+        // art-heavy libraries.
+        let tracks = read_slice(chunk, workers);
         done += tracks.len();
         on_batch(tracks, done, total)?;
     }
@@ -467,7 +514,7 @@ fn run_streamed_scan(
         .send(ScanEvent::Total { count: total })
         .map_err(|e| e.to_string())?;
 
-    let completed = read_in_batches(&files, cancel, |tracks, done, total| {
+    let completed = read_in_batches(&files, scan_workers(), cancel, |tracks, done, total| {
         channel
             .send(ScanEvent::Batch { tracks })
             .map_err(|e| e.to_string())?;
@@ -958,7 +1005,7 @@ mod tests {
         // Not cancelled → reads everything.
         let cancel = AtomicBool::new(false);
         let mut seen = 0usize;
-        let completed = read_in_batches(&files, &cancel, |t, _, _| {
+        let completed = read_in_batches(&files, 1, &cancel, |t, _, _| {
             seen += t.len();
             Ok(())
         })
@@ -968,12 +1015,38 @@ mod tests {
         // Cancelled before the first batch → stops immediately, no batches.
         let cancel = AtomicBool::new(true);
         let mut batches = 0usize;
-        let completed = read_in_batches(&files, &cancel, |_, _, _| {
+        let completed = read_in_batches(&files, 1, &cancel, |_, _, _| {
             batches += 1;
             Ok(())
         })
         .unwrap();
         assert!(!completed, "should report not-completed when cancelled");
         assert_eq!(batches, 0, "no batches once cancellation is set");
+    }
+
+    /// Phase 6: bounded-parallel reading must yield byte-identical results (same
+    /// order, same tracks) as sequential — concurrency is an optimization, not a
+    /// behavior change. See PLAN.md §5.2.
+    #[test]
+    fn parallel_read_matches_sequential() {
+        // A heterogeneous, deliberately unsorted list so chunk boundaries matter.
+        let exts = ["wv", "mp3", "flac", "ogg", "m4a", "opus", "wav", "aiff"];
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        for round in 0..3 {
+            for (i, fmt) in exts.iter().enumerate() {
+                // Vary which file lands where so order is non-trivial.
+                let pick = exts[(i + round) % exts.len()];
+                let _ = pick;
+                files.push(fixtures_dir().join(format!("sample.{fmt}")));
+            }
+        }
+        let seq = read_slice(&files, 1);
+        for workers in [2usize, 4, 8] {
+            let par = read_slice(&files, workers);
+            assert_eq!(
+                seq, par,
+                "read_slice(workers={workers}) must match sequential"
+            );
+        }
     }
 }

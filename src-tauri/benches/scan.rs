@@ -9,7 +9,9 @@
 //!
 //! See PLAN.md §4.3.
 
-use audiotag_lib::tags::{read_track, read_track_opt, scan_paths, write_track, Track};
+use audiotag_lib::tags::{
+    read_track, read_track_opt, scan_files_for_bench, scan_paths, write_track, Track,
+};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::path::{Path, PathBuf};
 
@@ -132,11 +134,32 @@ fn bench_write(c: &mut Criterion) {
     group.finish();
 }
 
+/// Sequential vs bounded-parallel reading over a corpus (Phase 6 A/B). Decides
+/// whether bounded concurrency is a real win on this machine/disk.
+fn bench_scan_parallel(c: &mut Criterion) {
+    let mut group = c.benchmark_group("scan_parallel");
+    group.sample_size(10);
+    for corpus in ["medium", "large", "art-heavy"] {
+        let dir = data_dir().join(corpus);
+        if !dir.is_dir() {
+            continue;
+        }
+        let paths = vec![dir.to_string_lossy().into_owned()];
+        for workers in [1usize, 4, 8] {
+            group.bench_function(format!("{corpus}/w{workers}"), |b| {
+                b.iter(|| scan_files_for_bench(std::hint::black_box(&paths), workers))
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_read_per_format,
     bench_read_art,
     bench_scan,
+    bench_scan_parallel,
     bench_write
 );
 criterion_main!(benches);

@@ -66,7 +66,9 @@ adheres to [Semantic Versioning](https://semver.org/).
   files loaded so far.
 - Folder scanning is faster: reads now skip parsing audio-stream properties
   (duration/bitrate) that the app never displays — up to ~50% less per-file
-  parse time on compressed formats (m4a/ogg/opus). Tag data is unchanged.
+  parse time on compressed formats (m4a/ogg/opus) — and files are read with
+  bounded parallelism (~1.6× faster on mixed libraries, ~2× on art-heavy ones).
+  Tag data and ordering are unchanged.
 - The file grid and tag editor stay responsive with very large libraries:
   grid rows are memoized (keyboard navigation and inline edits re-render only
   the affected rows), selection-derived state is computed proportional to the

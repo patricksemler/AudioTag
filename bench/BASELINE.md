@@ -59,7 +59,12 @@ against it. Re-capture if the machine or the baseline commit changes.
 | small  | 1,000 | 36.2 ms   | 27.6 Kelem/s |
 | medium | 5,000 | 191.2 ms  | 26.1 Kelem/s |
 
-> Wall-clock scales linearly with file count (single-threaded). On this fast
+> **Phase 6 result (bounded parallel read, w1 → w8, `scan_parallel` bench):**
+> medium 140 ms → 85 ms (~1.6×); art-heavy (200 × ~3 MB) 122 ms → 59 ms (~2.1×).
+> Output byte-identical to sequential (`parallel_read_matches_sequential`);
+> diminishing returns past ~4 workers, cap is 8. See ADR 0007.
+
+> Wall-clock scales linearly with file count (single-threaded baseline). On this fast
 > SSD + Apple-silicon box ~26 K files/s; a real art-heavy library would be far
 > slower per file (see above). TTF row ≈ total scan today (no streaming).
 
