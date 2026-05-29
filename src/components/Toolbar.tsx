@@ -1,4 +1,4 @@
-import { FolderOpen, Files, Save, Replace, Music } from "lucide-react";
+import { FolderOpen, Files, Save, Replace, Music, X } from "lucide-react";
 
 interface ToolbarProps {
   onOpenFolder: () => void;
@@ -10,6 +10,10 @@ interface ToolbarProps {
   hasFiles: boolean;
   modifiedCount: number;
   busy: boolean;
+  /** True while a scan / save is in flight; either shows a Cancel button. */
+  scanning: boolean;
+  saving: boolean;
+  onCancel: () => void;
   /** Filename of the currently focused file, shown so users know what they're editing. */
   currentFile?: string;
 }
@@ -25,6 +29,15 @@ export function Toolbar(props: ToolbarProps) {
         <button type="button" onClick={props.onOpenFiles} disabled={props.busy}>
           <Files size={16} aria-hidden="true" /> Open Files
         </button>
+        {(props.scanning || props.saving) && (
+          <button
+            type="button"
+            onClick={props.onCancel}
+            aria-label={props.saving ? "Cancel save" : "Cancel scan"}
+          >
+            <X size={16} aria-hidden="true" /> Cancel
+          </button>
+        )}
       </div>
       <div className="toolbar-sep" role="separator" aria-orientation="vertical" />
       <div className="toolbar-group">

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { TriangleAlert, Circle, ChevronUp, ChevronDown } from "lucide-react";
 import { GRID_COLUMNS, type ColumnDef, type ColumnKey } from "../fields";
@@ -30,6 +30,10 @@ interface FileGridProps {
 
 const ROW_HEIGHT = 30;
 const MIN_COL = 48;
+
+// While dragging a header, the dragged column is pulled out (shown as a floating
+// ghost) and a "gap" placeholder of its width is inserted at the drop slot.
+type RenderCol = { c: number; p: number } | "gap";
 
 // Reused offscreen canvas for measuring text width when placing the edit caret.
 let measureCanvas: HTMLCanvasElement | null = null;
@@ -66,6 +70,161 @@ function caretIndexFromClientX(input: HTMLInputElement, clientX: number): number
   }
   return text.length;
 }
+
+// ---------------------------------------------------------------------------
+// GridRow — one memoized grid row.
+//
+// Virtualization limits the number of DOM nodes, but *not* re-renders: without
+// memoization every visible row re-renders on any focus/selection/edit change.
+// `React.memo` + the `rowsEqual` comparator below means an arrow-key move (which
+// changes only `focusIndex`, and the selected set) re-renders just the rows
+// whose `isSelected`/`isFocused` actually flipped — independent of total rows.
+//
+// Correctness rule: the comparator ignores the callback props, so those MUST be
+// stable across renders (they are — the parent wraps them in `useCallback` with
+// refs for any state they read). `editingKey`/`draft` are passed per-row (null/""
+// for non-edited rows) so a keystroke in the inline editor only re-renders the
+// row being edited.
+// ---------------------------------------------------------------------------
+interface GridRowProps {
+  row: Row;
+  index: number;
+  top: number;
+  isSelected: boolean;
+  isFocused: boolean;
+  renderCols: RenderCol[];
+  colWidths: number[];
+  /** Width of the gap placeholder while a header is being dragged (else 0). */
+  gapWidth: number;
+  /** The column being inline-edited in *this* row, or null. */
+  editingKey: EditableField | null;
+  /** Draft value, only meaningful when `editingKey` is set. */
+  draft: string;
+  editRef: React.RefObject<HTMLInputElement | null>;
+  onRowMouseDown: (e: React.MouseEvent, index: number) => void;
+  onRowContextMenu: (e: React.MouseEvent, index: number) => void;
+  onCellMouseDown: (e: React.MouseEvent, row: Row, col: ColumnDef) => void;
+  onDraftChange: (value: string) => void;
+  onEditKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  onEditBlur: () => void;
+}
+
+function GridRowImpl(props: GridRowProps) {
+  const { row, index, isSelected, isFocused, renderCols, colWidths, gapWidth, editingKey } = props;
+  return (
+    // Rows are not individually focusable by design: this grid uses the ARIA
+    // `aria-activedescendant` pattern (single tab-stop on the grid container,
+    // keyboard handled in `handleKeyDown`). Mouse selection via onMouseDown is a
+    // pointer-only enhancement.
+    // eslint-disable-next-line jsx-a11y/interactive-supports-focus
+    <div
+      id={`row-${index}`}
+      role="row"
+      aria-rowindex={index + 1}
+      aria-selected={isSelected}
+      className={
+        "grid-row" +
+        (isSelected ? " is-selected" : "") +
+        (isFocused ? " is-focused" : "") +
+        (row.error ? " is-error" : "")
+      }
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        width: "100%",
+        height: ROW_HEIGHT,
+        transform: `translateY(${props.top}px)`,
+      }}
+      onMouseDown={(e) => props.onRowMouseDown(e, index)}
+      onContextMenu={(e) => props.onRowContextMenu(e, index)}
+    >
+      {renderCols.map((rc) => {
+        if (rc === "gap") {
+          return (
+            <span
+              key="__gap__"
+              className="cell cell-gap"
+              style={{ width: gapWidth }}
+              aria-hidden="true"
+            />
+          );
+        }
+        const i = rc.c;
+        const col = GRID_COLUMNS[i];
+        const value = row[col.key] ?? "";
+        const isNum = !!col.numeric;
+        const isEditing = editingKey === col.key;
+        return (
+          // Cells aren't individually focusable by design (the grid uses the
+          // aria-activedescendant pattern with one tab-stop on the container).
+          // Click-to-edit is a pointer-only enhancement.
+          // eslint-disable-next-line jsx-a11y/interactive-supports-focus
+          <span
+            key={col.key}
+            role="gridcell"
+            className={`cell ${isNum ? "cell-num" : ""}${isEditing ? " is-editing" : ""}`}
+            style={{ width: colWidths[i] }}
+            title={isEditing ? undefined : value || undefined}
+            onMouseDown={(e) => props.onCellMouseDown(e, row, col)}
+          >
+            {/* The File column carries the row's status indicator inline
+                (unsaved dot / error icon) so there's no separate gutter. */}
+            {col.key === "filename" &&
+              (row.error ? (
+                <span className="row-status" title={row.error} aria-label="Error reading file" role="img">
+                  <TriangleAlert size={13} aria-hidden="true" />
+                </span>
+              ) : row.modified ? (
+                <span className="row-status" title="Unsaved changes" aria-label="Unsaved changes" role="img">
+                  <Circle size={8} fill="currentColor" aria-hidden="true" />
+                </span>
+              ) : null)}
+            {isEditing ? (
+              <input
+                ref={props.editRef}
+                className="cell-edit"
+                value={props.draft}
+                aria-label={`Edit ${col.label}`}
+                inputMode={isNum ? "numeric" : "text"}
+                onMouseDown={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  let v = e.target.value;
+                  if (isNum) v = v.replace(/[^0-9]/g, "");
+                  props.onDraftChange(v);
+                }}
+                onKeyDown={props.onEditKeyDown}
+                onBlur={props.onEditBlur}
+              />
+            ) : (
+              value
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function rowsEqual(a: GridRowProps, b: GridRowProps): boolean {
+  // Callback props are intentionally excluded — they are stable by contract
+  // (see GridRow doc comment). Compare only what changes a row's appearance.
+  return (
+    a.row === b.row &&
+    a.index === b.index &&
+    a.top === b.top &&
+    a.isSelected === b.isSelected &&
+    a.isFocused === b.isFocused &&
+    a.renderCols === b.renderCols &&
+    a.colWidths === b.colWidths &&
+    a.gapWidth === b.gapWidth &&
+    a.editingKey === b.editingKey &&
+    a.draft === b.draft &&
+    a.editRef === b.editRef
+  );
+}
+
+const GridRow = memo(GridRowImpl, rowsEqual);
 
 export function FileGrid(props: FileGridProps) {
   const { rows, selected, focusIndex, sort } = props;
@@ -104,6 +263,16 @@ export function FileGrid(props: FileGridProps) {
   // Viewport x of the click that opened the editor, used to place the caret.
   const clickXRef = useRef<number | null>(null);
 
+  // Refs mirroring state that the stabilized callbacks read, so those callbacks
+  // can keep a constant identity (required for the GridRow memo to hold) while
+  // still seeing the latest values.
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
   useEffect(() => {
     const input = editRef.current;
     if (!editing || !input) return;
@@ -116,18 +285,20 @@ export function FileGrid(props: FileGridProps) {
     input.setSelectionRange(idx, idx);
   }, [editing]);
 
-  function beginEdit(row: Row, col: ColumnDef, clientX?: number) {
+  const beginEdit = useCallback((row: Row, col: ColumnDef, clientX?: number) => {
     if (col.editable === false || row.error) return;
     clickXRef.current = clientX ?? null;
     setDraft(row[col.key] ?? "");
     setEditing({ id: row.id, key: col.key as EditableField });
-  }
+  }, []);
 
-  function commitEdit() {
-    if (!editing) return;
-    props.onCellCommit(editing.id, editing.key, draft);
+  const { onCellCommit } = props;
+  const commitEdit = useCallback(() => {
+    const ed = editingRef.current;
+    if (!ed) return;
+    onCellCommit(ed.id, ed.key, draftRef.current);
     setEditing(null);
-  }
+  }, [onCellCommit]);
 
   // ----- column resizing -----
   function setWidth(index: number, w: number) {
@@ -355,31 +526,71 @@ export function FileGrid(props: FileGridProps) {
     }
   }
 
-  function handleRowClick(e: React.MouseEvent, index: number) {
-    if (e.button === 2) return; // right-click is handled via onContextMenu
-    if (e.shiftKey) props.onRange(index);
-    else if (e.metaKey || e.ctrlKey) props.onToggle(index);
-    else props.onSelectSingle(index);
-  }
+  // ----- stabilized per-row callbacks (constant identity for the GridRow memo) -----
+  const { onRange, onToggle, onSelectSingle, onContextMenu } = props;
+  const handleRowMouseDown = useCallback(
+    (e: React.MouseEvent, index: number) => {
+      if (e.button === 2) return; // right-click is handled via onContextMenu
+      if (e.shiftKey) onRange(index);
+      else if (e.metaKey || e.ctrlKey) onToggle(index);
+      else onSelectSingle(index);
+    },
+    [onRange, onToggle, onSelectSingle],
+  );
+
+  const handleRowContextMenu = useCallback(
+    (e: React.MouseEvent, index: number) => {
+      e.preventDefault();
+      onContextMenu(index, e.clientX, e.clientY);
+    },
+    [onContextMenu],
+  );
 
   // Two-step inline editing: the first click on a row selects it; a subsequent
   // click on a cell of that already-active row starts editing it. Modifier /
   // shift clicks and non-editable cells fall through to row selection.
-  function handleCellMouseDown(e: React.MouseEvent, row: Row, col: ColumnDef) {
-    if (e.button !== 0) return;
-    if (e.shiftKey || e.metaKey || e.ctrlKey) return;
-    if (col.editable === false || row.error) return;
-    // A click on a cell of an already-selected row starts editing it. The first
-    // click on an unselected row falls through to the row handler (which selects
-    // it); the next click on a cell then edits.
-    if (!selected.has(row.id)) return;
-    e.stopPropagation();
-    // Prevent the default focus action: the cell span isn't focusable, so the
-    // browser would move focus to the grid container after our handler runs —
-    // which blurs the just-opened input and immediately commits/closes it.
-    e.preventDefault();
-    beginEdit(row, col, e.clientX);
-  }
+  const handleCellMouseDown = useCallback(
+    (e: React.MouseEvent, row: Row, col: ColumnDef) => {
+      if (e.button !== 0) return;
+      if (e.shiftKey || e.metaKey || e.ctrlKey) return;
+      if (col.editable === false || row.error) return;
+      // A click on a cell of an already-selected row starts editing it. The
+      // first click on an unselected row falls through to the row handler (which
+      // selects it); the next click on a cell then edits.
+      if (!selectedRef.current.has(row.id)) return;
+      e.stopPropagation();
+      // Prevent the default focus action: the cell span isn't focusable, so the
+      // browser would move focus to the grid container after our handler runs —
+      // which blurs the just-opened input and immediately commits/closes it.
+      e.preventDefault();
+      beginEdit(row, col, e.clientX);
+    },
+    [beginEdit],
+  );
+
+  const handleEditKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      e.stopPropagation();
+      const el = e.currentTarget;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitEdit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setEditing(null);
+      } else if (
+        // At the text boundary the caret can't move further, so the arrow's
+        // default would scroll the grid — suppress that.
+        (e.key === "ArrowLeft" && el.selectionStart === 0 && el.selectionEnd === 0) ||
+        (e.key === "ArrowRight" &&
+          el.selectionStart === el.value.length &&
+          el.selectionEnd === el.value.length)
+      ) {
+        e.preventDefault();
+      }
+    },
+    [commitEdit],
+  );
 
   const focusedRow = rows[focusIndex];
   const virtualItems = virtualizer.getVirtualItems();
@@ -392,21 +603,24 @@ export function FileGrid(props: FileGridProps) {
   // out (it's shown as the floating ghost) and an empty placeholder of its width
   // is inserted at the current drop slot — so the other columns shift live to
   // open a gap exactly where it will land. "gap" entries are that placeholder.
-  type RenderCol = { c: number; p: number } | "gap";
-  let renderCols: RenderCol[];
-  if (dragging) {
-    const remaining = colOrder
-      .map((c, p) => ({ c, p }))
-      .filter(({ p }) => p !== dragPos);
-    const k = dropPos ?? remaining.length;
-    renderCols = [];
-    for (let idx = 0; idx <= remaining.length; idx++) {
-      if (idx === k) renderCols.push("gap");
-      if (idx < remaining.length) renderCols.push(remaining[idx]);
+  //
+  // Memoized so that focus/selection/edit changes (which don't touch the column
+  // layout) keep a *stable* `renderCols` identity — a prerequisite for the
+  // GridRow memo to skip unaffected rows.
+  const renderCols = useMemo<RenderCol[]>(() => {
+    if (dragPos == null) {
+      return colOrder.map((c, p) => ({ c, p }));
     }
-  } else {
-    renderCols = colOrder.map((c, p) => ({ c, p }));
-  }
+    const remaining = colOrder.map((c, p) => ({ c, p })).filter(({ p }) => p !== dragPos);
+    const k = dropPos ?? remaining.length;
+    const out: RenderCol[] = [];
+    for (let idx = 0; idx <= remaining.length; idx++) {
+      if (idx === k) out.push("gap");
+      if (idx < remaining.length) out.push(remaining[idx]);
+    }
+    return out;
+  }, [colOrder, dragPos, dropPos]);
+  const gapWidth = dragging ? colWidths[draggedCol] : 0;
 
   // Geometry for the floating full-column ghost (header + visible data cells),
   // read live so it stays aligned even if the grid was scrolled.
@@ -468,7 +682,7 @@ export function FileGrid(props: FileGridProps) {
               <span
                 key="__gap__"
                 className="cell cell-head cell-head-gap"
-                style={{ width: colWidths[draggedCol] }}
+                style={{ width: gapWidth }}
                 aria-hidden="true"
               />
             );
@@ -545,123 +759,28 @@ export function FileGrid(props: FileGridProps) {
         <div style={{ height: virtualizer.getTotalSize(), position: "relative", minWidth: totalWidth }}>
           {virtualItems.map((vi) => {
             const row = rows[vi.index];
-            const isSelected = selected.has(row.id);
-            const isFocused = vi.index === focusIndex;
+            const isEditingThisRow = editing?.id === row.id;
             return (
-              // Rows are not individually focusable by design: this grid uses the
-              // ARIA `aria-activedescendant` pattern (single tab-stop on the grid
-              // container, keyboard handled in `handleKeyDown`). Mouse selection
-              // via onMouseDown is a pointer-only enhancement.
-              // eslint-disable-next-line jsx-a11y/interactive-supports-focus
-              <div
+              <GridRow
                 key={row.id}
-                id={`row-${vi.index}`}
-                role="row"
-                aria-rowindex={vi.index + 1}
-                aria-selected={isSelected}
-                className={
-                  "grid-row" +
-                  (isSelected ? " is-selected" : "") +
-                  (isFocused ? " is-focused" : "") +
-                  (row.error ? " is-error" : "")
-                }
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  height: ROW_HEIGHT,
-                  transform: `translateY(${vi.start}px)`,
-                }}
-                onMouseDown={(e) => handleRowClick(e, vi.index)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  props.onContextMenu(vi.index, e.clientX, e.clientY);
-                }}
-              >
-                {renderCols.map((rc) => {
-                  if (rc === "gap") {
-                    return (
-                      <span
-                        key="__gap__"
-                        className="cell cell-gap"
-                        style={{ width: colWidths[draggedCol] }}
-                        aria-hidden="true"
-                      />
-                    );
-                  }
-                  const i = rc.c;
-                  const col = GRID_COLUMNS[i];
-                  const value = row[col.key] ?? "";
-                  const isNum = !!col.numeric;
-                  const isEditing = editing?.id === row.id && editing.key === col.key;
-                  return (
-                    // Cells aren't individually focusable by design (the grid uses
-                    // the aria-activedescendant pattern with one tab-stop on the
-                    // container). Click-to-edit is a pointer-only enhancement.
-                    // eslint-disable-next-line jsx-a11y/interactive-supports-focus
-                    <span
-                      key={col.key}
-                      role="gridcell"
-                      className={`cell ${isNum ? "cell-num" : ""}${isEditing ? " is-editing" : ""}`}
-                      style={{ width: colWidths[i] }}
-                      title={isEditing ? undefined : value || undefined}
-                      onMouseDown={(e) => handleCellMouseDown(e, row, col)}
-                    >
-                      {/* The File column carries the row's status indicator inline
-                          (unsaved dot / error icon) so there's no separate gutter. */}
-                      {col.key === "filename" &&
-                        (row.error ? (
-                          <span className="row-status" title={row.error} aria-label="Error reading file" role="img">
-                            <TriangleAlert size={13} aria-hidden="true" />
-                          </span>
-                        ) : row.modified ? (
-                          <span className="row-status" title="Unsaved changes" aria-label="Unsaved changes" role="img">
-                            <Circle size={8} fill="currentColor" aria-hidden="true" />
-                          </span>
-                        ) : null)}
-                      {isEditing ? (
-                        <input
-                          ref={editRef}
-                          className="cell-edit"
-                          value={draft}
-                          aria-label={`Edit ${col.label}`}
-                          inputMode={isNum ? "numeric" : "text"}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onChange={(e) => {
-                            let v = e.target.value;
-                            if (isNum) v = v.replace(/[^0-9]/g, "");
-                            setDraft(v);
-                          }}
-                          onKeyDown={(e) => {
-                            e.stopPropagation();
-                            const el = e.currentTarget;
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              commitEdit();
-                            } else if (e.key === "Escape") {
-                              e.preventDefault();
-                              setEditing(null);
-                            } else if (
-                              // At the text boundary the caret can't move further, so the
-                              // arrow's default would scroll the grid — suppress that.
-                              (e.key === "ArrowLeft" && el.selectionStart === 0 && el.selectionEnd === 0) ||
-                              (e.key === "ArrowRight" &&
-                                el.selectionStart === el.value.length &&
-                                el.selectionEnd === el.value.length)
-                            ) {
-                              e.preventDefault();
-                            }
-                          }}
-                          onBlur={commitEdit}
-                        />
-                      ) : (
-                        value
-                      )}
-                    </span>
-                  );
-                })}
-              </div>
+                row={row}
+                index={vi.index}
+                top={vi.start}
+                isSelected={selected.has(row.id)}
+                isFocused={vi.index === focusIndex}
+                renderCols={renderCols}
+                colWidths={colWidths}
+                gapWidth={gapWidth}
+                editingKey={isEditingThisRow ? editing!.key : null}
+                draft={isEditingThisRow ? draft : ""}
+                editRef={editRef}
+                onRowMouseDown={handleRowMouseDown}
+                onRowContextMenu={handleRowContextMenu}
+                onCellMouseDown={handleCellMouseDown}
+                onDraftChange={setDraft}
+                onEditKeyDown={handleEditKeyDown}
+                onEditBlur={commitEdit}
+              />
             );
           })}
         </div>

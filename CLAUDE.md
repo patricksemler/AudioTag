@@ -11,12 +11,18 @@ pnpm tauri dev            # run the desktop app
 pnpm build                # typecheck (tsc) + vite build the frontend
 pnpm typecheck            # tsc --noEmit
 pnpm lint                 # eslint (includes jsx-a11y)
+pnpm test                 # vitest (frontend unit tests)
 cd src-tauri && cargo check     # compile-check Rust
 cd src-tauri && cargo clippy    # lint Rust
 cd src-tauri && cargo fmt       # format Rust
+cd src-tauri && cargo test      # run Rust tests
 
 scripts/release.sh              # build installers locally (mac native + win container)
 UPLOAD=1 scripts/release.sh     # …and publish to a GitHub Release
+
+scripts/gen-corpus.sh           # generate benchmark corpora into bench-data/ (needs ffmpeg)
+cargo bench --manifest-path src-tauri/Cargo.toml   # run criterion benches
+AUDIOTAG_TIMING=1 pnpm tauri dev # print per-stage scan/save timing to stderr
 ```
 
 Releases are built locally, not in CI: macOS natively, Windows cross-compiled
@@ -30,6 +36,10 @@ cross-compile). Run on a Mac to get the macOS build.
   `fields.ts` is the single source of truth for editable fields + columns.
 - `src-tauri/src/tags.rs` — all tag logic and the Tauri commands.
 - `src-tauri/src/lib.rs` — app setup + command registration.
+- `bench/` — performance harness: `BASELINE.md` (captured numbers),
+  `README.md` (how to run), `profiling.md` (frontend procedure). Corpus
+  generator is `scripts/gen-corpus.sh`; criterion benches are
+  `src-tauri/benches/scan.rs`. The optimization roadmap is `PLAN.md`.
 
 ## Conventions
 
@@ -38,6 +48,11 @@ cross-compile). Run on a Mac to get the macOS build.
   screen reader). Target WCAG 2.2 AA.
 - WMA/ASF is intentionally unsupported (lofty can't write it).
 - Editable tag fields are strings end-to-end; numeric validation is UI-side.
+- In `App.tsx`, all `rows` replacements go through the single `commitRows`
+  helper, which keeps `dirtyIds` in sync with each row's `modified` flag — don't
+  call `setRows` directly. Pure edit/dirty/mixed-value logic lives in `edits.ts`
+  (unit-tested in `edits.test.ts`); grid rows are memoized (`GridRow`), so any
+  prop passed to a row must keep a stable identity.
 
 ## Keep docs in sync (definition of done)
 

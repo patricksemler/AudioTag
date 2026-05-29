@@ -3,13 +3,16 @@ import { Music } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
 import {
+  cancelOperation,
   getCoverArt,
   loadSession,
   pickFiles,
   pickFolder,
+  saveChanges,
   saveSession,
   saveTracks,
   scanPaths,
+  scanPathsStreamed,
 } from "./api";
 import { AdditionalTags } from "./components/AdditionalTags";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
@@ -20,6 +23,7 @@ import { TagEditor } from "./components/TagEditor";
 import { Toolbar } from "./components/Toolbar";
 import type { ColumnKey } from "./fields";
 import { EDITABLE_FIELDS, type CoverArt, type EditableField, type Row, type Track } from "./types";
+import { compileFind, isModified, replaceAllCount } from "./edits";
 
 /** Fields validated as numeric (UI-side). Excluded from "all text fields" replace. */
 const NUMERIC_FIELDS = new Set<EditableField>([
@@ -34,37 +38,27 @@ function toRow(track: Track): Row {
   return { ...track, id: track.path, modified: false };
 }
 
-function isModified(row: Row, original: Track): boolean {
-  if (row.art) return true; // pending cover art to write
-  if (row.has_art !== original.has_art) return true;
-  return EDITABLE_FIELDS.some((f) => (row[f] ?? "") !== (original[f] ?? ""));
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** Replace every occurrence of `find` in `haystack`, returning the result and hit count. */
-function replaceAllCount(
-  haystack: string,
-  find: string,
-  replacement: string,
-  matchCase: boolean,
-): { result: string; hits: number } {
-  const re = new RegExp(escapeRegExp(find), matchCase ? "g" : "gi");
-  let hits = 0;
-  const result = haystack.replace(re, () => {
-    hits++;
-    return replacement;
-  });
-  return { result, hits };
-}
+/**
+ * Use the streaming scan (rows paint as they load) vs the blocking `scan_paths`.
+ * A flag so we can fall back instantly if streaming ever misbehaves. PLAN.md §5.3.
+ */
+const USE_STREAMING = true;
 
 export default function App() {
   const [rows, setRows] = useState<Row[]>([]);
+  // Ids of rows with unsaved edits, kept in sync with `rows` through the single
+  // `commitRows` entry point below. Lets `modifiedCount` be O(1) (`.size`)
+  // instead of an O(total) scan on every render. PLAN.md §7.
+  const [dirtyIds, setDirtyIds] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusIndex, setFocusIndex] = useState(0);
   const [busy, setBusy] = useState(false);
+  // True while a streamed scan / save is in flight (each drives a Cancel
+  // button). The ref holds the current cancellable operation's id so Cancel can
+  // target it; only one such operation runs at a time (guarded by `busy`).
+  const [scanning, setScanning] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const opIdRef = useRef<string | null>(null);
   const [message, setMessage] = useState("");
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(300);
@@ -82,6 +76,15 @@ export default function App() {
   // Mirror of `rows` for use inside async callbacks (avoids stale closures).
   const rowsRef = useRef<Row[]>(rows);
   rowsRef.current = rows;
+
+  // The single place `rows` is replaced. Recomputes `dirtyIds` from the new
+  // array in the same pass, so the dirty set can never drift from `row.modified`
+  // (the per-row source of truth the grid renders). Every mutation routes
+  // through this. PLAN.md §7.
+  const commitRows = useCallback((next: Row[]) => {
+    setRows(next);
+    setDirtyIds(new Set(next.filter((r) => r.modified).map((r) => r.id)));
+  }, []);
   // Mirror of `focusIndex` so global shortcuts can read it without re-binding.
   const focusIndexRef = useRef(0);
   focusIndexRef.current = focusIndex;
@@ -130,9 +133,9 @@ export default function App() {
     const prev = undoStack.current.pop()!;
     redoStack.current.push(rowsRef.current);
     lastEditSig.current = null;
-    setRows(prev);
+    commitRows(prev);
     setMessage("Undo");
-  }, []);
+  }, [commitRows]);
 
   const redo = useCallback(() => {
     if (redoStack.current.length === 0) {
@@ -142,12 +145,30 @@ export default function App() {
     const next = redoStack.current.pop()!;
     undoStack.current.push(rowsRef.current);
     lastEditSig.current = null;
-    setRows(next);
+    commitRows(next);
     setMessage("Redo");
-  }, []);
+  }, [commitRows]);
 
-  const selectedRows = useMemo(() => rows.filter((r) => selected.has(r.id)), [rows, selected]);
-  const modifiedCount = useMemo(() => rows.filter((r) => r.modified).length, [rows]);
+  // Index rows by id, recomputed only when `rows` changes — so selection-only
+  // changes (arrow-key navigation) don't trigger an O(total) scan.
+  const rowsById = useMemo(() => {
+    const m = new Map<string, Row>();
+    for (const r of rows) m.set(r.id, r);
+    return m;
+  }, [rows]);
+
+  // O(selection): look the selected ids up in the index instead of filtering all
+  // rows. Stable identity when neither selection nor rows changed. PLAN.md §7.
+  const selectedRows = useMemo(() => {
+    const out: Row[] = [];
+    for (const id of selected) {
+      const r = rowsById.get(id);
+      if (r) out.push(r);
+    }
+    return out;
+  }, [selected, rowsById]);
+
+  const modifiedCount = dirtyIds.size;
 
   // ----- loading -----
   // `remember` controls whether the input paths are added to the persisted
@@ -156,42 +177,115 @@ export default function App() {
     if (paths.length === 0) return;
     setBusy(true);
     setMessage(remember ? "Scanning…" : "Restoring last session…");
+    clearHistory(); // structural change — past snapshots no longer apply
     try {
-      const tracks = await scanPaths(paths);
-      const existing = new Set(rowsRef.current.map((r) => r.id));
-      const additions = tracks.filter((t) => !existing.has(t.path)).map(toRow);
-      additions.forEach((a) => originals.current.set(a.id, { ...a }));
+      // Seed dedup + the running accumulator from what's already loaded. The
+      // accumulator (not rowsRef, which only updates on render) is the source of
+      // truth while batches stream in, so batches arriving faster than React can
+      // re-render never drop rows. Selection is set only on the first batch when
+      // the list started empty, so streaming never steals focus (PLAN.md §12).
+      const known = new Set(rowsRef.current.map((r) => r.id));
       const wasEmpty = rowsRef.current.length === 0;
-      const next = [...rowsRef.current, ...additions];
-      clearHistory(); // structural change — past snapshots no longer apply
-      setRows(next);
-      if (wasEmpty && next.length > 0) {
-        setSelected(new Set([next[0].id]));
-        setFocusIndex(0);
-        anchor.current = 0;
-      }
+      let acc = rowsRef.current;
+      let added = 0;
+      let dupes = 0;
+      let selectedFirst = !wasEmpty;
 
-      // Track the source paths for session restore.
-      let sourcesChanged = false;
-      for (const p of paths) {
-        if (!sources.current.includes(p)) {
-          sources.current.push(p);
-          sourcesChanged = true;
+      let cancelled = false;
+
+      const ingest = (tracks: Track[]) => {
+        const additions: Row[] = [];
+        for (const t of tracks) {
+          if (known.has(t.path)) {
+            dupes++;
+            continue;
+          }
+          known.add(t.path);
+          const r = toRow(t);
+          originals.current.set(r.id, { ...r });
+          additions.push(r);
         }
-      }
-      if (remember && sourcesChanged) void saveSession(sources.current);
+        if (additions.length === 0) return;
+        added += additions.length;
+        acc = [...acc, ...additions];
+        commitRows(acc);
+        if (!selectedFirst) {
+          selectedFirst = true;
+          setSelected(new Set([acc[0].id]));
+          setFocusIndex(0);
+          anchor.current = 0;
+        }
+      };
 
-      setMessage(
-        additions.length === tracks.length
-          ? `Loaded ${additions.length} files`
-          : `Added ${additions.length} new files (${tracks.length - additions.length} already loaded)`,
-      );
+      if (USE_STREAMING) {
+        const opId = crypto.randomUUID();
+        opIdRef.current = opId;
+        setScanning(true);
+        try {
+          await scanPathsStreamed(paths, opId, (ev) => {
+            if (ev.event === "total") {
+              setMessage(
+                remember ? `Scanning… 0 of ${ev.data.count}` : `Restoring ${ev.data.count} files…`,
+              );
+            } else if (ev.event === "batch") {
+              ingest(ev.data.tracks);
+            } else if (ev.event === "progress") {
+              setMessage(
+                remember
+                  ? `Scanning… ${ev.data.done} of ${ev.data.total}`
+                  : `Restoring ${ev.data.done} of ${ev.data.total}…`,
+              );
+            } else if (ev.event === "cancelled") {
+              cancelled = true;
+            }
+          });
+        } finally {
+          setScanning(false);
+          opIdRef.current = null;
+        }
+      } else {
+        ingest(await scanPaths(paths));
+      }
+
+      // Track the source paths for session restore (skip if cancelled — the
+      // load was incomplete).
+      if (!cancelled) {
+        let sourcesChanged = false;
+        for (const p of paths) {
+          if (!sources.current.includes(p)) {
+            sources.current.push(p);
+            sourcesChanged = true;
+          }
+        }
+        if (remember && sourcesChanged) void saveSession(sources.current);
+      }
+
+      if (cancelled) {
+        setMessage(`Scan cancelled — loaded ${added} file${added === 1 ? "" : "s"}`);
+      } else {
+        setMessage(
+          dupes === 0
+            ? `Loaded ${added} file${added === 1 ? "" : "s"}`
+            : `Added ${added} new file${added === 1 ? "" : "s"} (${dupes} already loaded)`,
+        );
+      }
     } catch (e) {
       setMessage(`Error: ${String(e)}`);
     } finally {
       setBusy(false);
     }
-  }, [clearHistory]);
+  }, [clearHistory, commitRows]);
+
+  // Ask the in-flight scan or save to stop; the backend emits a terminal
+  // `cancelled` event. Rows already streamed in stay loaded; files already
+  // saved stay clean, the rest stay dirty.
+  const cancelOp = useCallback(() => {
+    const id = opIdRef.current;
+    if (id) {
+      setMessage("Cancelling…");
+      void cancelOperation(id);
+    }
+  }, []);
 
   // ----- session restore (once, on startup) -----
   const didRestore = useRef(false);
@@ -240,8 +334,8 @@ export default function App() {
     (field: EditableField, value: string) => {
       // Coalesce a typing burst into the same field/selection as one undo step.
       recordHistory(`field:${field}:${[...selected].sort().join(",")}`);
-      setRows((prev) =>
-        prev.map((r) => {
+      commitRows(
+        rowsRef.current.map((r) => {
           if (!selected.has(r.id)) return r;
           const updated = { ...r, [field]: value };
           const orig = originals.current.get(r.id);
@@ -250,15 +344,15 @@ export default function App() {
         }),
       );
     },
-    [selected, recordHistory],
+    [selected, recordHistory, commitRows],
   );
 
   // Edit a single row's field (used by inline double-click editing in the grid).
   const editCell = useCallback(
     (id: string, field: EditableField, value: string) => {
       recordHistory(null); // a committed inline edit is a discrete step
-      setRows((prev) =>
-        prev.map((r) => {
+      commitRows(
+        rowsRef.current.map((r) => {
           if (r.id !== id) return r;
           const updated = { ...r, [field]: value };
           const orig = originals.current.get(r.id);
@@ -267,7 +361,7 @@ export default function App() {
         }),
       );
     },
-    [recordHistory],
+    [recordHistory, commitRows],
   );
 
   // ----- sorting -----
@@ -293,7 +387,9 @@ export default function App() {
         : av.localeCompare(bv, undefined, { sensitivity: "base", numeric: true });
       return dir === "asc" ? cmp : -cmp;
     });
-    setRows(sorted);
+    // Reorder only — dirty membership is unchanged, but route through commitRows
+    // for the single-entry-point invariant.
+    commitRows(sorted);
     setSort({ key, dir });
     if (focusedId) {
       const ni = sorted.findIndex((r) => r.id === focusedId);
@@ -302,7 +398,7 @@ export default function App() {
         anchor.current = ni;
       }
     }
-  }, [sort]);
+  }, [sort, commitRows]);
 
   // ----- sidebar resize (drag the divider between the grid and the editor) -----
   const startSidebarResize = useCallback(
@@ -357,11 +453,11 @@ export default function App() {
     const next = rowsRef.current.filter((r) => !ids.has(r.id));
     ids.forEach((id) => originals.current.delete(id));
     clearHistory(); // structural change — past snapshots no longer apply
-    setRows(next);
+    commitRows(next);
     setSelected(new Set());
     setFocusIndex((fi) => Math.max(0, Math.min(fi, next.length - 1)));
     setMessage(`Removed ${ids.size} file${ids.size === 1 ? "" : "s"} from the list`);
-  }, [selected, clearHistory]);
+  }, [selected, clearHistory, commitRows]);
 
   const copyTags = useCallback(async (id: string) => {
     const row = rowsRef.current.find((r) => r.id === id);
@@ -392,8 +488,8 @@ export default function App() {
     const clip = tagClipboard.current;
     if (!clip) return;
     recordHistory(null);
-    setRows((prev) =>
-      prev.map((r) => {
+    commitRows(
+      rowsRef.current.map((r) => {
         if (!selected.has(r.id)) return r;
         const updated = { ...r, ...clip.fields };
         // Paste the copied cover when there is one; otherwise leave art as-is.
@@ -407,12 +503,12 @@ export default function App() {
       }),
     );
     setMessage(`Pasted tags into ${selected.size} file${selected.size === 1 ? "" : "s"}`);
-  }, [selected, recordHistory]);
+  }, [selected, recordHistory, commitRows]);
 
   const clearTags = useCallback(() => {
     recordHistory(null);
-    setRows((prev) =>
-      prev.map((r) => {
+    commitRows(
+      rowsRef.current.map((r) => {
         if (!selected.has(r.id)) return r;
         const cleared = { ...r };
         for (const f of EDITABLE_FIELDS) cleared[f] = "";
@@ -423,7 +519,7 @@ export default function App() {
       }),
     );
     setMessage(`Cleared tags on ${selected.size} file${selected.size === 1 ? "" : "s"}`);
-  }, [selected, recordHistory]);
+  }, [selected, recordHistory, commitRows]);
 
   // After editing additional tags, re-scan that file so its row reflects disk.
   const refreshRow = useCallback(async (path: string) => {
@@ -432,11 +528,11 @@ export default function App() {
       if (!track) return;
       const fresh = toRow(track);
       originals.current.set(path, { ...fresh });
-      setRows((prev) => prev.map((r) => (r.id === path ? fresh : r)));
+      commitRows(rowsRef.current.map((r) => (r.id === path ? fresh : r)));
     } catch {
       /* ignore — keep the existing row */
     }
-  }, []);
+  }, [commitRows]);
 
   // ----- batch find & replace -----
   // Operates on the current selection, or every loaded file when nothing is selected.
@@ -451,15 +547,18 @@ export default function App() {
       recordHistory(null);
       let changedFiles = 0;
       let totalHits = 0;
-      setRows((prev) =>
-        prev.map((r) => {
+      // Compile the find pattern once, then reuse it across every row × field
+      // (was recompiled per cell).
+      const re = compileFind(find, matchCase);
+      commitRows(
+        rowsRef.current.map((r) => {
           if (!targetIds.has(r.id)) return r;
           let next = r;
           let touched = false;
           for (const f of fields) {
             const cur = r[f] ?? "";
             if (!cur) continue;
-            const { result, hits } = replaceAllCount(cur, find, replace, matchCase);
+            const { result, hits } = replaceAllCount(cur, re, replace);
             if (hits > 0) {
               if (!touched) {
                 next = { ...r };
@@ -483,7 +582,7 @@ export default function App() {
           : `No matches for “${find}”`,
       );
     },
-    [selected, recordHistory],
+    [selected, recordHistory, commitRows],
   );
 
   // ----- save / revert -----
@@ -491,14 +590,51 @@ export default function App() {
     const dirty = rowsRef.current.filter((r) => r.modified && !r.error);
     if (dirty.length === 0) return;
     setBusy(true);
-    setMessage(`Saving ${dirty.length} files…`);
+    setMessage(`Saving ${dirty.length} file${dirty.length === 1 ? "" : "s"}…`);
+    const payload = dirty.map((r) => ({ ...r }));
+    // Only paths the backend confirmed `ok` are cleared; failed and (on cancel)
+    // not-yet-attempted rows stay dirty.
+    const okPaths = new Set<string>();
+    let firstError: string | null = null;
+    let failedCount = 0;
+    let cancelled = false;
     try {
-      const results = await saveTracks(dirty.map((r) => ({ ...r })));
-      const okPaths = new Set(results.filter((x) => x.ok).map((x) => x.path));
-      const failed = results.filter((x) => !x.ok);
+      if (USE_STREAMING) {
+        const opId = crypto.randomUUID();
+        opIdRef.current = opId;
+        setSaving(true);
+        try {
+          await saveChanges(payload, opId, (ev) => {
+            if (ev.event === "saved") {
+              if (ev.data.ok) okPaths.add(ev.data.path);
+              else {
+                failedCount++;
+                if (firstError === null) firstError = ev.data.error;
+              }
+            } else if (ev.event === "progress") {
+              setMessage(`Saving ${ev.data.done} of ${ev.data.total}…`);
+            } else if (ev.event === "cancelled") {
+              cancelled = true;
+            }
+          });
+        } finally {
+          setSaving(false);
+          opIdRef.current = null;
+        }
+      } else {
+        const results = await saveTracks(payload);
+        for (const x of results) {
+          if (x.ok) okPaths.add(x.path);
+          else {
+            failedCount++;
+            if (firstError === null) firstError = x.error;
+          }
+        }
+      }
+
       clearHistory(); // edits are now persisted; drop the undo trail
-      setRows((prev) =>
-        prev.map((r) => {
+      commitRows(
+        rowsRef.current.map((r) => {
           if (!okPaths.has(r.id)) return r;
           // Art is now embedded on disk; drop the pending payload.
           const saved = { ...r, art: null, modified: false };
@@ -506,29 +642,32 @@ export default function App() {
           return saved;
         }),
       );
-      setMessage(
-        failed.length === 0
-          ? `Saved ${okPaths.size} files`
-          : `Saved ${okPaths.size}, ${failed.length} failed (${failed[0].error ?? "unknown"})`,
-      );
+
+      if (cancelled) {
+        setMessage(`Save cancelled — saved ${okPaths.size} file${okPaths.size === 1 ? "" : "s"}`);
+      } else if (failedCount === 0) {
+        setMessage(`Saved ${okPaths.size} file${okPaths.size === 1 ? "" : "s"}`);
+      } else {
+        setMessage(`Saved ${okPaths.size}, ${failedCount} failed (${firstError ?? "unknown"})`);
+      }
     } catch (e) {
       setMessage(`Save error: ${String(e)}`);
     } finally {
       setBusy(false);
     }
-  }, [clearHistory]);
+  }, [clearHistory, commitRows]);
 
   const revert = useCallback(() => {
     recordHistory(null); // reverting is itself undoable
-    setRows((prev) =>
-      prev.map((r) => {
+    commitRows(
+      rowsRef.current.map((r) => {
         if (!r.modified) return r;
         const orig = originals.current.get(r.id);
         return orig ? { ...orig, id: r.id, modified: false } : r;
       }),
     );
     setMessage("Reverted unsaved changes");
-  }, [recordHistory]);
+  }, [recordHistory, commitRows]);
 
   // ----- selection -----
   const selectSingle = useCallback((index: number) => {
@@ -623,10 +762,12 @@ export default function App() {
   const empty = rows.length === 0;
   const currentFile = rows[focusIndex]?.filename;
 
-  // Build the right-click menu for the targeted row.
+  // Build the right-click menu for the targeted row. Looks the target up via
+  // `rowsRef` (not `rows`) so it doesn't recompute on every edit — the menu is
+  // transient and rebuilt whenever it (re)opens.
   const menuItems: MenuItem[] = useMemo(() => {
     if (!menu) return [];
-    const targetRow = rows.find((r) => r.id === menu.rowId);
+    const targetRow = rowsRef.current.find((r) => r.id === menu.rowId);
     const selCount = selected.size;
     const plural = selCount === 1 ? "" : "s";
     return [
@@ -659,7 +800,7 @@ export default function App() {
         onSelect: removeSelected,
       },
     ];
-  }, [menu, rows, selected, clipboardFilled, copyTags, pasteTags, clearTags, removeSelected]);
+  }, [menu, selected, clipboardFilled, copyTags, pasteTags, clearTags, removeSelected]);
 
   // Find & replace targets the selection, or all files when nothing is selected.
   const frTargetCount = selected.size > 0 ? selected.size : rows.length;
@@ -685,6 +826,9 @@ export default function App() {
         hasFiles={!empty}
         modifiedCount={modifiedCount}
         busy={busy}
+        scanning={scanning}
+        saving={saving}
+        onCancel={cancelOp}
         currentFile={empty ? undefined : currentFile}
       />
 

@@ -5,12 +5,17 @@
 //! fetch embedded cover art.
 
 use base64::Engine;
-use lofty::config::WriteOptions;
+use lofty::config::{ParseOptions, WriteOptions};
+use lofty::file::TaggedFile;
 use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::prelude::*;
+use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, Tag, TagItem, TagType};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use walkdir::WalkDir;
 
 /// File extensions we treat as taggable audio (everything lofty supports; no WMA).
@@ -23,7 +28,7 @@ const AUDIO_EXTS: &[&str] = &[
 ///
 /// All editable fields are strings so the frontend can treat them uniformly;
 /// numeric fields (track/disc/year) are validated on the UI side.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     /// Absolute path on disk — also serves as the stable identity of the row.
     pub path: String,
@@ -90,7 +95,7 @@ pub struct SaveResult {
 
 /// Base64-encoded cover art, used both to display art in the editor and to
 /// carry pasted art back to `save_tracks` for embedding.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CoverArt {
     pub mime: String,
     pub base64: String,
@@ -132,6 +137,15 @@ fn ext_upper(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// True when `AUDIOTAG_TIMING=1` is set — gates dev-only timing spans printed to
+/// stderr (visible in the `pnpm tauri dev` console). Off by default; no release
+/// cost beyond an env lookup at the start of a scan/save. See PLAN.md §4.3.
+fn timing_enabled() -> bool {
+    std::env::var("AUDIOTAG_TIMING")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
 fn is_audio(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -153,9 +167,32 @@ fn read_year(tag: &Tag) -> Option<String> {
         .filter(|s| s.len() == 4 && s.chars().all(|c| c.is_ascii_digit()))
 }
 
+/// Read a file with tags (and cover art) but *without* audio-stream property
+/// parsing when `read_properties` is false. We never display duration/bitrate/
+/// sample-rate, so parsing them is wasted work — disabling it produces a
+/// byte-identical `Track` (proven by the `properties_off_parity` test). Cover
+/// art is still read so `has_art` stays accurate; lofty 0.24 exposes no cheaper
+/// presence check, and `read_cover_art(false)` would silently zero `has_art`
+/// (see ADR 0005).
+fn open_tagged(path: &Path, read_properties: bool) -> lofty::error::Result<TaggedFile> {
+    Probe::open(path)?
+        .options(ParseOptions::new().read_properties(read_properties))
+        .read()
+}
+
 /// Build a `Track` model from a single file path.
-fn read_track(path: &Path) -> Track {
-    let tagged = match lofty::read_from_path(path) {
+///
+/// `pub` for the criterion benches; not part of a stable public API.
+#[doc(hidden)]
+pub fn read_track(path: &Path) -> Track {
+    read_track_opt(path, false)
+}
+
+/// `read_track` with explicit property-parsing control, for A/B benchmarking
+/// and parity testing. `read_track` calls this with `read_properties = false`.
+#[doc(hidden)]
+pub fn read_track_opt(path: &Path, read_properties: bool) -> Track {
+    let tagged = match open_tagged(path, read_properties) {
         Ok(t) => t,
         Err(e) => return Track::errored(path, e.to_string()),
     };
@@ -216,7 +253,9 @@ fn apply_item(tag: &mut Tag, key: ItemKey, value: &Option<String>) {
     }
 }
 
-fn write_track(t: &Track) -> Result<(), String> {
+/// `pub` for the criterion benches; not part of a stable public API.
+#[doc(hidden)]
+pub fn write_track(t: &Track) -> Result<(), String> {
     let path = Path::new(&t.path);
     let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
 
@@ -269,14 +308,13 @@ fn write_track(t: &Track) -> Result<(), String> {
 // Tauri commands
 // ---------------------------------------------------------------------------
 
-/// Scan the given paths (files or folders) and return tag models for every
-/// audio file found. Folders are walked recursively. Results are sorted by path.
-#[tauri::command]
-pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
+/// Walk the input paths (files or folders, recursive), keep audio files, and
+/// return them sorted + deduped — the canonical file order every scan uses, so
+/// the streamed and non-streamed scans yield identical ordering.
+fn collect_audio_files(paths: &[String]) -> Vec<std::path::PathBuf> {
     let mut files: Vec<std::path::PathBuf> = Vec::new();
-
     for p in paths {
-        let path = std::path::PathBuf::from(&p);
+        let path = std::path::PathBuf::from(p);
         if path.is_dir() {
             for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
                 let ep = entry.path();
@@ -288,36 +326,361 @@ pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
             files.push(path);
         }
     }
-
     files.sort();
     files.dedup();
-    files.iter().map(|p| read_track(p)).collect()
+    files
+}
+
+/// How many tracks the streamed scan reads before flushing a batch to the
+/// client. Balances first-paint latency against React update spam. PLAN.md §5.3.
+const SCAN_BATCH: usize = 200;
+
+/// Upper bound on reader threads. Conservative so a single spinning disk can't
+/// thrash and memory stays bounded (each in-flight read may briefly hold one
+/// file's cover). PLAN.md §5.2.
+const MAX_SCAN_WORKERS: usize = 8;
+
+/// Reader-thread count for this machine: `min(cores, MAX_SCAN_WORKERS)`.
+fn scan_workers() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(MAX_SCAN_WORKERS)
+}
+
+/// Read a slice of files into `Track`s, preserving input order. Reads in
+/// parallel across up to `workers` threads by splitting into contiguous chunks
+/// (so reassembly is just concatenation — byte-identical to a sequential read).
+/// Falls back to sequential for tiny slices or a single worker. PLAN.md §5.2.
+fn read_slice(files: &[std::path::PathBuf], workers: usize) -> Vec<Track> {
+    let n = files.len();
+    if workers <= 1 || n <= 1 {
+        return files.iter().map(|p| read_track(p)).collect();
+    }
+    let chunk = n.div_ceil(workers.min(n));
+    std::thread::scope(|s| {
+        let handles: Vec<_> = files
+            .chunks(chunk)
+            .map(|sub| s.spawn(move || sub.iter().map(|p| read_track(p)).collect::<Vec<Track>>()))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect()
+    })
+}
+
+/// A streamed-scan event sent over the per-operation [`Channel`]. Errored files
+/// are folded into batches (as errored `Track`s) exactly as the non-streamed
+/// scan returns them, so the two paths stay byte-for-byte equivalent.
+#[derive(Clone, Serialize)]
+#[serde(tag = "event", content = "data", rename_all = "camelCase")]
+pub enum ScanEvent {
+    /// Total audio files discovered (sent once, before any batch).
+    Total { count: usize },
+    /// A chunk of read tracks, in final sorted order.
+    Batch { tracks: Vec<Track> },
+    /// Files read so far / total.
+    Progress { done: usize, total: usize },
+    /// Terminal: the scan was cancelled; rows already delivered remain valid.
+    Cancelled,
+    /// Terminal: the scan finished normally.
+    Done,
+}
+
+/// Registry of in-flight cancellable operations, keyed by a client-supplied
+/// operation id. Each entry is an `AtomicBool` the operation polls between
+/// batches; `cancel_operation` flips it. Managed as Tauri app state. PLAN.md §5.
+#[derive(Default)]
+pub struct OpRegistry(Mutex<HashMap<String, Arc<AtomicBool>>>);
+
+impl OpRegistry {
+    fn register(&self, id: &str) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.0.lock().unwrap().insert(id.to_string(), flag.clone());
+        flag
+    }
+    fn finish(&self, id: &str) {
+        self.0.lock().unwrap().remove(id);
+    }
+    fn request_cancel(&self, id: &str) {
+        if let Some(flag) = self.0.lock().unwrap().get(id) {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Signal a running cancellable operation (scan) to stop. No-op if the id is
+/// unknown (already finished). The operation polls the flag between batches and
+/// emits a terminal `Cancelled` event.
+#[tauri::command]
+pub fn cancel_operation(operation_id: String, registry: tauri::State<OpRegistry>) {
+    registry.request_cancel(&operation_id);
+}
+
+/// Bench-only: collect + read with an explicit worker count, for the
+/// sequential-vs-parallel A/B. Not a stable API.
+#[doc(hidden)]
+pub fn scan_files_for_bench(paths: &[String], workers: usize) -> Vec<Track> {
+    let files = collect_audio_files(paths);
+    read_slice(&files, workers)
+}
+
+/// Scan the given paths (files or folders) and return tag models for every
+/// audio file found. Folders are walked recursively. Results are sorted by path.
+#[tauri::command]
+pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
+    let timing = timing_enabled();
+    let t_walk = std::time::Instant::now();
+    let files = collect_audio_files(&paths);
+    let walk_ms = t_walk.elapsed().as_secs_f64() * 1e3;
+
+    let t_read = std::time::Instant::now();
+    let tracks: Vec<Track> = read_slice(&files, scan_workers());
+    let read_ms = t_read.elapsed().as_secs_f64() * 1e3;
+
+    if timing {
+        let bytes = serde_json::to_string(&tracks).map(|s| s.len()).unwrap_or(0);
+        eprintln!(
+            "[timing] scan_paths: {} files | walk+sort {:.1}ms | read {:.1}ms | serialized {} bytes ({:.1} KB)",
+            tracks.len(),
+            walk_ms,
+            read_ms,
+            bytes,
+            bytes as f64 / 1024.0,
+        );
+    }
+    tracks
+}
+
+/// Streaming variant of [`scan_paths`]: walks + sorts the file list, then reads
+/// tags in batches, emitting events over `channel` so the UI can paint rows as
+/// they arrive instead of waiting for the whole scan. Concatenating every
+/// `Batch`'s tracks in arrival order yields exactly `scan_paths(paths)` (proven
+/// by `streamed_scan_matches_blocking`). PLAN.md §5.3.
+#[tauri::command]
+pub fn scan_paths_streamed(
+    paths: Vec<String>,
+    channel: tauri::ipc::Channel<ScanEvent>,
+    operation_id: String,
+    registry: tauri::State<OpRegistry>,
+) -> Result<(), String> {
+    let cancel = registry.register(&operation_id);
+    let result = run_streamed_scan(&paths, &channel, &cancel);
+    registry.finish(&operation_id); // always clear the registry entry
+    result
+}
+
+/// Read `files` in batches of `SCAN_BATCH`, invoking `on_batch(tracks, done,
+/// total)` per batch, polling `cancel` before each. Returns `true` if it read
+/// everything, `false` if it stopped early because cancellation was requested.
+/// Channel-free so it can be unit-tested directly (`cancellation_stops_scan`).
+fn read_in_batches(
+    files: &[std::path::PathBuf],
+    workers: usize,
+    cancel: &AtomicBool,
+    mut on_batch: impl FnMut(Vec<Track>, usize, usize) -> Result<(), String>,
+) -> Result<bool, String> {
+    let total = files.len();
+    let mut done = 0;
+    for chunk in files.chunks(SCAN_BATCH) {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+        // Read each batch in parallel (bounded workers); only one batch's worth
+        // of tracks is resident at a time, so peak memory stays bounded even on
+        // art-heavy libraries.
+        let tracks = read_slice(chunk, workers);
+        done += tracks.len();
+        on_batch(tracks, done, total)?;
+    }
+    Ok(true)
+}
+
+/// The streamed-scan body, factored out so the registry entry is always cleaned
+/// up by the caller regardless of how this returns. Polls `cancel` between
+/// batches and emits a terminal `Cancelled` (instead of `Done`) when set.
+fn run_streamed_scan(
+    paths: &[String],
+    channel: &tauri::ipc::Channel<ScanEvent>,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let timing = timing_enabled();
+    let t_all = std::time::Instant::now();
+
+    let files = collect_audio_files(paths);
+    let total = files.len();
+    channel
+        .send(ScanEvent::Total { count: total })
+        .map_err(|e| e.to_string())?;
+
+    let completed = read_in_batches(&files, scan_workers(), cancel, |tracks, done, total| {
+        channel
+            .send(ScanEvent::Batch { tracks })
+            .map_err(|e| e.to_string())?;
+        channel
+            .send(ScanEvent::Progress { done, total })
+            .map_err(|e| e.to_string())
+    })?;
+
+    channel
+        .send(if completed {
+            ScanEvent::Done
+        } else {
+            ScanEvent::Cancelled
+        })
+        .map_err(|e| e.to_string())?;
+
+    if timing {
+        eprintln!(
+            "[timing] scan_paths_streamed: {} files, {} | {:.1}ms",
+            total,
+            if completed { "done" } else { "cancelled" },
+            t_all.elapsed().as_secs_f64() * 1e3,
+        );
+    }
+    Ok(())
 }
 
 /// Write edits for the given tracks back to disk. Returns a result per file.
 #[tauri::command]
 pub fn save_tracks(tracks: Vec<Track>) -> Vec<SaveResult> {
-    tracks
+    let timing = timing_enabled();
+    let count = tracks.len();
+    let t_all = std::time::Instant::now();
+    let mut max_file_ms = 0.0_f64;
+
+    let results = tracks
         .into_iter()
-        .map(|t| match write_track(&t) {
-            Ok(()) => SaveResult {
-                path: t.path,
-                ok: true,
-                error: None,
-            },
-            Err(e) => SaveResult {
-                path: t.path,
-                ok: false,
-                error: Some(e),
-            },
+        .map(|t| {
+            let t_file = std::time::Instant::now();
+            let result = match write_track(&t) {
+                Ok(()) => SaveResult {
+                    path: t.path,
+                    ok: true,
+                    error: None,
+                },
+                Err(e) => SaveResult {
+                    path: t.path,
+                    ok: false,
+                    error: Some(e),
+                },
+            };
+            let file_ms = t_file.elapsed().as_secs_f64() * 1e3;
+            if file_ms > max_file_ms {
+                max_file_ms = file_ms;
+            }
+            result
         })
-        .collect()
+        .collect();
+
+    if timing {
+        eprintln!(
+            "[timing] save_tracks: {} files | total {:.1}ms | slowest file {:.1}ms",
+            count,
+            t_all.elapsed().as_secs_f64() * 1e3,
+            max_file_ms,
+        );
+    }
+    results
+}
+
+/// A streamed-save event sent over the per-operation [`Channel`].
+#[derive(Clone, Serialize)]
+#[serde(tag = "event", content = "data", rename_all = "camelCase")]
+pub enum SaveEvent {
+    /// One file's outcome (mirrors [`SaveResult`]).
+    Saved {
+        path: String,
+        ok: bool,
+        error: Option<String>,
+    },
+    /// Files written so far / total.
+    Progress { done: usize, total: usize },
+    /// Terminal: cancelled. Files reported `Saved { ok: true }` before this are
+    /// persisted; the rest were not touched and stay dirty on the client.
+    Cancelled,
+    /// Terminal: all files attempted.
+    Done,
+}
+
+/// Streaming, cancellable variant of [`save_tracks`]: writes one file at a time
+/// (sequential by design — concurrent writes to the same tree risk lock and
+/// correctness issues, PLAN.md §5.4), emitting a `Saved` result per file and
+/// `Progress` updates, and stopping early on cancellation. Keeps `save_tracks`
+/// for rollback.
+#[tauri::command]
+pub fn save_changes(
+    tracks: Vec<Track>,
+    channel: tauri::ipc::Channel<SaveEvent>,
+    operation_id: String,
+    registry: tauri::State<OpRegistry>,
+) -> Result<(), String> {
+    let cancel = registry.register(&operation_id);
+    let result = run_save(tracks, &channel, &cancel);
+    registry.finish(&operation_id);
+    result
+}
+
+fn run_save(
+    tracks: Vec<Track>,
+    channel: &tauri::ipc::Channel<SaveEvent>,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let mut send_err: Option<String> = None;
+    let completed = save_each(tracks, cancel, |path, ok, error, done, total| {
+        if send_err.is_some() {
+            return;
+        }
+        let r = channel
+            .send(SaveEvent::Saved { path, ok, error })
+            .and_then(|()| channel.send(SaveEvent::Progress { done, total }));
+        if let Err(e) = r {
+            send_err = Some(e.to_string());
+        }
+    });
+    if let Some(e) = send_err {
+        return Err(e);
+    }
+    channel
+        .send(if completed {
+            SaveEvent::Done
+        } else {
+            SaveEvent::Cancelled
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Write each track sequentially, polling `cancel` before each and invoking
+/// `on_result(path, ok, error, done, total)` per file. Returns `true` if all
+/// were attempted, `false` if cancellation stopped it early (already-written
+/// files stay written; the rest are untouched). Channel-free so it can be
+/// unit-tested directly (`save_each_*`). PLAN.md §5.4.
+fn save_each(
+    tracks: Vec<Track>,
+    cancel: &AtomicBool,
+    mut on_result: impl FnMut(String, bool, Option<String>, usize, usize),
+) -> bool {
+    let total = tracks.len();
+    for (i, t) in tracks.into_iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        let (ok, error) = match write_track(&t) {
+            Ok(()) => (true, None),
+            Err(e) => (false, Some(e)),
+        };
+        on_result(t.path, ok, error, i + 1, total);
+    }
+    true
 }
 
 /// Lazily fetch the first embedded cover art for a single file, base64-encoded.
 #[tauri::command]
 pub fn get_cover_art(path: String) -> Option<CoverArt> {
-    let tagged = lofty::read_from_path(&path).ok()?;
+    // Cover art is read; audio properties aren't needed here.
+    let tagged = open_tagged(Path::new(&path), false).ok()?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
     let pic = tag.pictures().first()?;
     let mime = pic
@@ -345,7 +708,8 @@ fn display_key(key: ItemKey, native: TagType) -> Option<String> {
 #[tauri::command]
 pub fn read_all_tags(path: String) -> Result<AllTags, String> {
     let p = Path::new(&path);
-    let tagged = lofty::read_from_path(p).map_err(|e| e.to_string())?;
+    // Only tag items are needed; skip audio-property parsing.
+    let tagged = open_tagged(p, false).map_err(|e| e.to_string())?;
 
     let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
         return Ok(AllTags {
@@ -593,5 +957,267 @@ mod tests {
         let results = scan_paths(vec![p.to_string_lossy().into_owned()]);
         assert!(results.is_empty(), "non-audio file should be ignored");
         let _ = std::fs::remove_file(&p);
+    }
+
+    fn fixtures_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+    }
+
+    /// Phase 1: disabling audio-property parsing must produce a byte-identical
+    /// `Track` for every format (we never display properties). Guards the
+    /// `read_properties(false)` optimization. See PLAN.md §5.1.
+    #[test]
+    fn properties_off_parity() {
+        let dir = fixtures_dir();
+        let formats = ["mp3", "flac", "m4a", "ogg", "opus", "wav", "aiff", "wv"];
+        for fmt in formats {
+            let path = dir.join(format!("sample.{fmt}"));
+            assert!(path.exists(), "missing fixture: {}", path.display());
+            let with = read_track_opt(&path, true);
+            let without = read_track_opt(&path, false);
+            assert_eq!(
+                with.error, None,
+                "{fmt}: fixture should read cleanly (props on)"
+            );
+            assert_eq!(
+                with, without,
+                "{fmt}: Track must be identical with properties on vs off"
+            );
+        }
+    }
+
+    /// Phase 1: `has_art` must stay accurate with the property-off read (cover
+    /// art is still parsed). An art-bearing file reads `has_art = true`; a
+    /// plain file reads `false`. See PLAN.md §5.1 / H3.
+    #[test]
+    fn has_art_parity() {
+        let dir = fixtures_dir();
+        let art = read_track_opt(&dir.join("sample_art.flac"), false);
+        assert_eq!(art.error, None, "art fixture should read cleanly");
+        assert!(art.has_art, "art fixture must report has_art = true");
+
+        let plain = read_track_opt(&dir.join("sample.flac"), false);
+        assert!(!plain.has_art, "plain fixture must report has_art = false");
+    }
+
+    /// Corrupt/unreadable files must not panic or abort the scan: they surface
+    /// as errored rows while valid files still read. See PLAN.md §13 / H11.
+    #[test]
+    fn scan_survives_corrupt_files() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("audiotag_corrupt_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A valid file alongside several adversarial ones.
+        std::fs::copy(fixtures_dir().join("sample.flac"), dir.join("valid.flac")).unwrap();
+        std::fs::write(dir.join("zero.mp3"), b"").unwrap();
+        std::fs::write(dir.join("text.mp3"), b"this is not audio at all").unwrap();
+        let mut truncated = std::fs::read(fixtures_dir().join("sample.flac")).unwrap();
+        truncated.truncate(120);
+        std::fs::write(dir.join("truncated.flac"), &truncated).unwrap();
+
+        let results = scan_paths(vec![dir.to_string_lossy().into_owned()]);
+        assert_eq!(results.len(), 4, "all four files should produce a row");
+        let ok = results.iter().filter(|t| t.error.is_none()).count();
+        let errored = results.iter().filter(|t| t.error.is_some()).count();
+        assert!(ok >= 1, "the valid file should read");
+        assert!(errored >= 1, "corrupt files should surface as errored rows");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 4: concatenating the streamed scan's batches (in arrival order)
+    /// must equal `scan_paths` exactly — same order, same tracks, including
+    /// errored rows. The command sends these same chunks over the channel, so
+    /// this proves client-side reassembly parity. See PLAN.md §5.3.
+    #[test]
+    fn streamed_scan_matches_blocking() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("audiotag_stream_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A handful of mixed-format files (unsorted names) + a corrupt one, so
+        // ordering and error-folding are both exercised.
+        for (i, fmt) in ["wv", "mp3", "flac", "ogg", "m4a", "opus", "wav", "aiff"]
+            .iter()
+            .enumerate()
+        {
+            std::fs::copy(
+                fixtures_dir().join(format!("sample.{fmt}")),
+                dir.join(format!("z{:02}_track.{fmt}", 99 - i)),
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.join("m05_broken.mp3"), b"not audio").unwrap();
+
+        let arg = vec![dir.to_string_lossy().into_owned()];
+        let blocking = scan_paths(arg.clone());
+
+        // Simulate the streamed read with a small batch size to span >1 batch.
+        let files = collect_audio_files(&arg);
+        let mut streamed: Vec<Track> = Vec::new();
+        for chunk in files.chunks(3) {
+            for p in chunk {
+                streamed.push(read_track(p));
+            }
+        }
+
+        assert_eq!(
+            blocking, streamed,
+            "streamed reassembly must equal scan_paths"
+        );
+        assert!(blocking.len() >= 9, "all files should produce rows");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 5: the registry flips a per-operation flag and forgets finished ids.
+    #[test]
+    fn op_registry_cancel_and_finish() {
+        let reg = OpRegistry::default();
+        let flag = reg.register("op1");
+        assert!(!flag.load(Ordering::SeqCst), "starts un-cancelled");
+        reg.request_cancel("op1");
+        assert!(flag.load(Ordering::SeqCst), "request_cancel sets the flag");
+        reg.finish("op1");
+        // Cancelling an unknown/finished id is a harmless no-op.
+        reg.request_cancel("op1");
+        reg.request_cancel("never-existed");
+    }
+
+    /// Phase 5: a cancel flag set before a batch stops the scan early; batches
+    /// delivered before that remain a valid prefix of the full scan.
+    #[test]
+    fn cancellation_stops_scan() {
+        let files: Vec<std::path::PathBuf> =
+            (0..3).map(|_| fixtures_dir().join("sample.flac")).collect();
+
+        // Not cancelled → reads everything.
+        let cancel = AtomicBool::new(false);
+        let mut seen = 0usize;
+        let completed = read_in_batches(&files, 1, &cancel, |t, _, _| {
+            seen += t.len();
+            Ok(())
+        })
+        .unwrap();
+        assert!(completed && seen == files.len());
+
+        // Cancelled before the first batch → stops immediately, no batches.
+        let cancel = AtomicBool::new(true);
+        let mut batches = 0usize;
+        let completed = read_in_batches(&files, 1, &cancel, |_, _, _| {
+            batches += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!completed, "should report not-completed when cancelled");
+        assert_eq!(batches, 0, "no batches once cancellation is set");
+    }
+
+    /// Phase 6: bounded-parallel reading must yield byte-identical results (same
+    /// order, same tracks) as sequential — concurrency is an optimization, not a
+    /// behavior change. See PLAN.md §5.2.
+    #[test]
+    fn parallel_read_matches_sequential() {
+        // A heterogeneous, deliberately unsorted list so chunk boundaries matter.
+        let exts = ["wv", "mp3", "flac", "ogg", "m4a", "opus", "wav", "aiff"];
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        for round in 0..3 {
+            for (i, fmt) in exts.iter().enumerate() {
+                // Vary which file lands where so order is non-trivial.
+                let pick = exts[(i + round) % exts.len()];
+                let _ = pick;
+                files.push(fixtures_dir().join(format!("sample.{fmt}")));
+            }
+        }
+        let seq = read_slice(&files, 1);
+        for workers in [2usize, 4, 8] {
+            let par = read_slice(&files, workers);
+            assert_eq!(
+                seq, par,
+                "read_slice(workers={workers}) must match sequential"
+            );
+        }
+    }
+
+    /// Build a temp dir with `n` writable WAV copies; returns (dir, paths).
+    fn temp_wavs(n: usize) -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "audiotag_save_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = (0..n)
+            .map(|i| {
+                let p = dir.join(format!("f{i}.wav"));
+                std::fs::write(&p, minimal_wav()).unwrap();
+                p
+            })
+            .collect();
+        (dir, paths)
+    }
+
+    /// Phase 7: `save_each` reports one ok result per file and round-trips edits.
+    #[test]
+    fn save_each_reports_per_file() {
+        let (dir, paths) = temp_wavs(3);
+        let tracks: Vec<Track> = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| Track {
+                title: Some(format!("Title {i}")),
+                ..read_track(p)
+            })
+            .collect();
+
+        let cancel = AtomicBool::new(false);
+        let mut results = Vec::new();
+        let completed = save_each(tracks, &cancel, |path, ok, _err, _d, _t| {
+            results.push((path, ok));
+        });
+        assert!(completed);
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|(_, ok)| *ok));
+        for (i, p) in paths.iter().enumerate() {
+            assert_eq!(read_track(p).title, Some(format!("Title {i}")));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 7: cancelling mid-save stops before later files — already-written
+    /// files persist; untouched files keep their old tags and stay "dirty".
+    #[test]
+    fn save_each_cancel_midway() {
+        let (dir, paths) = temp_wavs(3);
+        let tracks: Vec<Track> = paths
+            .iter()
+            .map(|p| Track {
+                title: Some("Edited".into()),
+                ..read_track(p)
+            })
+            .collect();
+
+        // Request cancellation right after the first file is written, so the
+        // second iteration's pre-check stops the loop.
+        let cancel = AtomicBool::new(false);
+        let mut written = Vec::new();
+        let completed = save_each(tracks, &cancel, |path, ok, _e, _d, _t| {
+            written.push(path);
+            cancel.store(true, Ordering::SeqCst);
+            assert!(ok);
+        });
+        assert!(!completed, "cancellation should report not-completed");
+        assert_eq!(written.len(), 1, "only the first file should be written");
+
+        assert_eq!(read_track(&paths[0]).title.as_deref(), Some("Edited"));
+        assert_eq!(read_track(&paths[1]).title, None);
+        assert_eq!(read_track(&paths[2]).title, None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

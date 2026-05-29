@@ -60,6 +60,22 @@ adheres to [Semantic Versioning](https://semver.org/).
 - The tag editor no longer shows a redundant filename header or a collapse
   button (the focused file's name still appears in the toolbar), giving the
   cover art and fields more room.
+- Files now appear in the grid **as they load** — a folder scan streams rows in
+  batches and shows "Scanning… N of M" progress, instead of a blank wait until
+  the entire folder finishes. A **Cancel** button stops a long scan, keeping the
+  files loaded so far.
+- Saving many files now shows "Saving N of M" progress and can be **cancelled** —
+  files already written stay saved; the rest keep their unsaved marker.
+- Folder scanning is faster: reads now skip parsing audio-stream properties
+  (duration/bitrate) that the app never displays — up to ~50% less per-file
+  parse time on compressed formats (m4a/ogg/opus) — and files are read with
+  bounded parallelism (~1.6× faster on mixed libraries, ~2× on art-heavy ones).
+  Tag data and ordering are unchanged.
+- The file grid and tag editor stay responsive with very large libraries:
+  grid rows are memoized (keyboard navigation and inline edits re-render only
+  the affected rows), selection-derived state is computed proportional to the
+  selection rather than the whole list, the tag editor computes mixed values in
+  a single pass, and find/replace compiles its pattern once.
 
 ### Fixed
 

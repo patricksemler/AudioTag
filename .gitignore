@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Generated benchmark corpora (multi-GB; produced by scripts/gen-corpus.sh).
+bench-data/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
