@@ -16,6 +16,7 @@ pub fn run() {
             tags::save_tracks,
             tags::save_changes,
             tags::get_cover_art,
+            tags::get_cover_thumbnails,
             tags::read_all_tags,
             tags::save_all_tags,
             session::load_session,

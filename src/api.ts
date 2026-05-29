@@ -97,6 +97,15 @@ export function getCoverArt(path: string): Promise<CoverArt | null> {
   return invoke<CoverArt | null>("get_cover_art", { path });
 }
 
+/**
+ * Fetch small, downscaled cover thumbnails for a batch of files in one call.
+ * The result is keyed by path; files with no art (or undecodable art) are
+ * simply absent from the map. Used by the grid's cover-preview column.
+ */
+export function getCoverThumbnails(paths: string[]): Promise<Record<string, CoverArt>> {
+  return invoke<Record<string, CoverArt>>("get_cover_thumbnails", { paths });
+}
+
 /** Read every editable tag item from a file (for the additional-tags editor). */
 export function readAllTags(path: string): Promise<AllTags> {
   return invoke<AllTags>("read_all_tags", { path });

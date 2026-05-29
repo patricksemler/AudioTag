@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A fixed cover-art preview column at the left of the file grid. Thumbnails are
+  downscaled in the backend and fetched lazily (only for on-screen rows, batched
+  and cached) so the column stays cheap even for very large libraries.
 - Initial v0: Tauri 2 + React/TypeScript app skeleton.
 - Open folders (recursive) and individual audio files via native dialogs.
 - Accessible, virtualized file grid with keyboard navigation and multi-select.

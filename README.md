@@ -25,7 +25,8 @@ friendlier, no-cost package.
 - **Copy, paste and clear tags** between files from a right-click menu, and dig
   into the full tag list — adding your own custom tags — with the additional-tags
   editor.
-- **See your cover art.** Embedded album artwork is shown for the selected
+- **See your cover art.** A thumbnail of each file's embedded artwork sits in
+  the leftmost grid column, and the full-size cover is shown for the selected
   track.
 - **Edit safely.** Changes are staged in the app — nothing touches your files
   until you hit **Save**, and **Revert** undoes anything unsaved.

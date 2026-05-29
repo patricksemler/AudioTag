@@ -691,6 +691,71 @@ pub fn get_cover_art(path: String) -> Option<CoverArt> {
     Some(CoverArt { mime, base64 })
 }
 
+/// Longest edge (in pixels) of a grid thumbnail. Sized for a ~32px CSS cell on
+/// a 2× display; the downscaled PNG is a couple of KB, so the IPC payload for a
+/// screenful of rows stays tiny compared with shipping full-resolution covers.
+const THUMB_MAX_PX: u32 = 64;
+
+/// Decode one file's first embedded cover, downscale it to a small PNG, and
+/// return it base64-encoded keyed by the file path. `None` when the file has no
+/// art or the image can't be decoded (e.g. an unsupported embedded format).
+fn read_cover_thumbnail(path: &str) -> Option<(String, CoverArt)> {
+    let tagged = open_tagged(Path::new(path), false).ok()?;
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+    let pic = tag.pictures().first()?;
+    // `load_from_memory` sniffs the format from the bytes, so we don't rely on
+    // the (sometimes missing/wrong) declared MIME type.
+    let img = image::load_from_memory(pic.data()).ok()?;
+    // `thumbnail` preserves aspect ratio and uses a fast filter tuned for
+    // downscaling — ideal here since the result is only a few dozen pixels.
+    let thumb = img.thumbnail(THUMB_MAX_PX, THUMB_MAX_PX);
+    let mut buf = std::io::Cursor::new(Vec::new());
+    thumb.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    let base64 = base64::engine::general_purpose::STANDARD.encode(buf.get_ref());
+    Some((
+        path.to_string(),
+        CoverArt {
+            mime: "image/png".to_string(),
+            base64,
+        },
+    ))
+}
+
+/// Build downscaled cover thumbnails for a batch of files, returned as a map
+/// from path to thumbnail (paths with no art / undecodable art are omitted).
+///
+/// The frontend calls this only for the rows currently on screen and caches the
+/// results, so batches are small; decoding is still parallelised across the
+/// same worker pool the scan uses, splitting the batch into contiguous chunks.
+#[tauri::command]
+pub fn get_cover_thumbnails(paths: Vec<String>) -> HashMap<String, CoverArt> {
+    let n = paths.len();
+    let workers = scan_workers();
+    if workers <= 1 || n <= 1 {
+        return paths
+            .iter()
+            .filter_map(|p| read_cover_thumbnail(p))
+            .collect();
+    }
+    let chunk = n.div_ceil(workers.min(n));
+    std::thread::scope(|s| {
+        let handles: Vec<_> = paths
+            .chunks(chunk)
+            .map(|sub| {
+                s.spawn(move || {
+                    sub.iter()
+                        .filter_map(|p| read_cover_thumbnail(p))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect()
+    })
+}
+
 /// Produce a human-readable key name for a tag item. We prefer the canonical
 /// Vorbis-comment naming (TITLE, TRACKNUMBER, COMPOSER…) because it's readable
 /// across formats, falling back to the file's own native name (e.g. an ID3v2
@@ -1000,6 +1065,32 @@ mod tests {
 
         let plain = read_track_opt(&dir.join("sample.flac"), false);
         assert!(!plain.has_art, "plain fixture must report has_art = false");
+    }
+
+    /// `get_cover_thumbnails` returns a small decodable PNG for art-bearing files
+    /// and omits files with no art. The thumbnail is bounded by `THUMB_MAX_PX`.
+    #[test]
+    fn cover_thumbnails_downscale_and_skip() {
+        let dir = fixtures_dir();
+        let art = dir.join("sample_art.flac").to_string_lossy().into_owned();
+        let plain = dir.join("sample.flac").to_string_lossy().into_owned();
+
+        let thumbs = get_cover_thumbnails(vec![art.clone(), plain.clone()]);
+
+        assert!(!thumbs.contains_key(&plain), "no-art file must be omitted");
+        let thumb = thumbs.get(&art).expect("art file must yield a thumbnail");
+        assert_eq!(thumb.mime, "image/png");
+
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&thumb.base64)
+            .expect("thumbnail must be valid base64");
+        let img = image::load_from_memory(&bytes).expect("thumbnail must decode as an image");
+        assert!(
+            img.width() <= THUMB_MAX_PX && img.height() <= THUMB_MAX_PX,
+            "thumbnail {}x{} must fit within {THUMB_MAX_PX}px",
+            img.width(),
+            img.height()
+        );
     }
 
     /// Corrupt/unreadable files must not panic or abort the scan: they surface

@@ -293,6 +293,14 @@ button[aria-pressed="true"] {
 .grid-header-vp {
   flex: 0 0 auto;
   overflow: hidden;
+  /* Lay the fixed cover header beside the (scrollable) reorderable header. */
+  display: flex;
+}
+
+/* Keep the reorderable header at its full column width inside the flex vp
+   instead of shrinking to fit. */
+.grid-header-vp > .grid-header {
+  flex: 0 0 auto;
 }
 
 .grid-header {
@@ -382,6 +390,44 @@ button[aria-pressed="true"] {
 .cell-num {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- fixed cover-art column ---------- */
+/* Width must match THUMB_COL_W in FileGrid.tsx (the grid sizer reserves it). */
+.cell-thumb,
+.cell-head-thumb {
+  flex: 0 0 40px;
+  width: 40px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* The header cell lives outside .grid-header, so it misses the shared
+   column-divider rule — give it a matching right border. */
+.cell-head-thumb {
+  border-right: 1px solid var(--border);
+}
+
+.thumb-img {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 3px;
+  display: block;
+  /* A hairline frame so light covers stay distinct from the row background. */
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 12%);
+}
+
+/* Placeholder occupying the image's footprint, so rows don't shift when a
+   thumbnail resolves (or for files with no art). */
+.thumb-empty {
+  width: 28px;
+  height: 28px;
+  border-radius: 3px;
+  background: var(--bg-elev);
 }
 
 /* Vertical dividers between columns, running the full height of the list so it's

@@ -1,8 +1,17 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { TriangleAlert, Circle, ChevronUp, ChevronDown } from "lucide-react";
+import { coverThumbs } from "../coverThumbs";
 import { GRID_COLUMNS, type ColumnDef, type ColumnKey } from "../fields";
-import type { EditableField, Row } from "../types";
+import type { CoverArt, EditableField, Row } from "../types";
 
 export interface SortState {
   key: ColumnKey;
@@ -31,12 +40,73 @@ interface FileGridProps {
 const ROW_HEIGHT = 30;
 const MIN_COL = 48;
 
+// The fixed leading cover-art column. It sits left of every (reorderable) data
+// column and is deliberately kept *out* of the GRID_COLUMNS machinery, so it
+// can't be reordered, resized, or sorted — and the column drag/resize maths,
+// which measure against the reorderable header, stay untouched.
+const THUMB_COL_W = 40; // cell width incl. padding
+const THUMB_PX = 28; // rendered image size (px)
+
 // While dragging a header, the dragged column is pulled out (shown as a floating
 // ghost) and a "gap" placeholder of its width is inserted at the drop slot.
 type RenderCol = { c: number; p: number } | "gap";
 
 // Reused offscreen canvas for measuring text width (column auto-fit).
 let measureCanvas: HTMLCanvasElement | null = null;
+
+// ---------------------------------------------------------------------------
+// CoverThumb — the fixed leading cell showing a tiny cover-art preview.
+//
+// It subscribes to the `coverThumbs` store *by path* (not via row props), so a
+// thumbnail loading in only re-renders this one cell — the surrounding GridRow
+// memo is untouched. A pending pasted cover (`pendingArt`) is shown directly;
+// otherwise, when the file has art, the downscaled disk thumbnail is requested
+// lazily (on mount) and cached for the session.
+// ---------------------------------------------------------------------------
+interface CoverThumbProps {
+  path: string;
+  hasArt: boolean;
+  /** Unsaved pasted cover for this row, if any (takes precedence over disk). */
+  pendingArt: CoverArt | null | undefined;
+}
+
+function CoverThumbImpl({ path, hasArt, pendingArt }: CoverThumbProps) {
+  const subscribe = useCallback((cb: () => void) => coverThumbs.subscribe(path, cb), [path]);
+  const getSnapshot = useCallback(() => coverThumbs.get(path), [path]);
+  const cached = useSyncExternalStore(subscribe, getSnapshot);
+
+  // Only the disk-backed case needs a fetch; pending pasted art is in memory.
+  useEffect(() => {
+    if (hasArt && !pendingArt) coverThumbs.request(path);
+  }, [path, hasArt, pendingArt]);
+
+  const src = pendingArt
+    ? `data:${pendingArt.mime};base64,${pendingArt.base64}`
+    : hasArt
+      ? (cached ?? null)
+      : null;
+
+  return (
+    // Decorative: the file is identified by its filename cell, so the preview
+    // adds no information for assistive tech (kept out of the a11y tree).
+    <span className="cell cell-thumb" role="gridcell" aria-hidden="true">
+      {src ? (
+        <img
+          className="thumb-img"
+          src={src}
+          alt=""
+          width={THUMB_PX}
+          height={THUMB_PX}
+          draggable={false}
+        />
+      ) : (
+        <span className="thumb-empty" />
+      )}
+    </span>
+  );
+}
+
+const CoverThumb = memo(CoverThumbImpl);
 
 // ---------------------------------------------------------------------------
 // GridRow — one memoized grid row.
@@ -106,6 +176,7 @@ function GridRowImpl(props: GridRowProps) {
       onMouseDown={(e) => props.onRowMouseDown(e, index)}
       onContextMenu={(e) => props.onRowContextMenu(e, index)}
     >
+      <CoverThumb path={row.path} hasArt={row.has_art} pendingArt={row.art} />
       {renderCols.map((rc) => {
         if (rc === "gap") {
           return (
@@ -660,6 +731,10 @@ export function FileGrid(props: FileGridProps) {
           scrolled programmatically to mirror the body's horizontal scroll, so the
           (wider-than-panel) header row stays aligned with the data columns. */}
       <div ref={headerRef} className="grid-header-vp">
+        {/* Fixed leading header for the cover column. Outside .grid-header so it
+            never participates in column reordering/resizing. Decorative, like
+            the cells below it. */}
+        <span className="cell cell-head cell-head-thumb" aria-hidden="true" />
         <div
           ref={headerInnerRef}
           className="grid-header"
@@ -746,7 +821,13 @@ export function FileGrid(props: FileGridProps) {
           if (headerRef.current) headerRef.current.scrollLeft = e.currentTarget.scrollLeft;
         }}
       >
-        <div style={{ height: virtualizer.getTotalSize(), position: "relative", minWidth: totalWidth }}>
+        <div
+          style={{
+            height: virtualizer.getTotalSize(),
+            position: "relative",
+            minWidth: THUMB_COL_W + totalWidth,
+          }}
+        >
           {virtualItems.map((vi) => {
             const row = rows[vi.index];
             const isEditingThisRow = editing?.id === row.id;

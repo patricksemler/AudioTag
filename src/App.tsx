@@ -14,6 +14,7 @@ import {
   scanPaths,
   scanPathsStreamed,
 } from "./api";
+import { coverThumbs } from "./coverThumbs";
 import { AdditionalTags } from "./components/AdditionalTags";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { FileGrid, type SortState } from "./components/FileGrid";
@@ -651,6 +652,9 @@ export default function App() {
       commitRows(
         rowsRef.current.map((r) => {
           if (!okPaths.has(r.id)) return r;
+          // A pending cover was just written to disk — drop any cached grid
+          // thumbnail so the preview refetches the new embedded art.
+          if (r.art) coverThumbs.invalidate(r.path);
           // Art is now embedded on disk; drop the pending payload.
           const saved = { ...r, art: null, modified: false };
           originals.current.set(r.id, { ...saved });
