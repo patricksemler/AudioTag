@@ -12,7 +12,10 @@ use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, Tag, TagItem, TagType};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use walkdir::WalkDir;
 
 /// File extensions we treat as taggable audio (everything lofty supports; no WMA).
@@ -344,8 +347,40 @@ pub enum ScanEvent {
     Batch { tracks: Vec<Track> },
     /// Files read so far / total.
     Progress { done: usize, total: usize },
+    /// Terminal: the scan was cancelled; rows already delivered remain valid.
+    Cancelled,
     /// Terminal: the scan finished normally.
     Done,
+}
+
+/// Registry of in-flight cancellable operations, keyed by a client-supplied
+/// operation id. Each entry is an `AtomicBool` the operation polls between
+/// batches; `cancel_operation` flips it. Managed as Tauri app state. PLAN.md §5.
+#[derive(Default)]
+pub struct OpRegistry(Mutex<HashMap<String, Arc<AtomicBool>>>);
+
+impl OpRegistry {
+    fn register(&self, id: &str) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.0.lock().unwrap().insert(id.to_string(), flag.clone());
+        flag
+    }
+    fn finish(&self, id: &str) {
+        self.0.lock().unwrap().remove(id);
+    }
+    fn request_cancel(&self, id: &str) {
+        if let Some(flag) = self.0.lock().unwrap().get(id) {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Signal a running cancellable operation (scan) to stop. No-op if the id is
+/// unknown (already finished). The operation polls the flag between batches and
+/// emits a terminal `Cancelled` event.
+#[tauri::command]
+pub fn cancel_operation(operation_id: String, registry: tauri::State<OpRegistry>) {
+    registry.request_cancel(&operation_id);
 }
 
 /// Scan the given paths (files or folders) and return tag models for every
@@ -384,34 +419,76 @@ pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
 pub fn scan_paths_streamed(
     paths: Vec<String>,
     channel: tauri::ipc::Channel<ScanEvent>,
+    operation_id: String,
+    registry: tauri::State<OpRegistry>,
+) -> Result<(), String> {
+    let cancel = registry.register(&operation_id);
+    let result = run_streamed_scan(&paths, &channel, &cancel);
+    registry.finish(&operation_id); // always clear the registry entry
+    result
+}
+
+/// Read `files` in batches of `SCAN_BATCH`, invoking `on_batch(tracks, done,
+/// total)` per batch, polling `cancel` before each. Returns `true` if it read
+/// everything, `false` if it stopped early because cancellation was requested.
+/// Channel-free so it can be unit-tested directly (`cancellation_stops_scan`).
+fn read_in_batches(
+    files: &[std::path::PathBuf],
+    cancel: &AtomicBool,
+    mut on_batch: impl FnMut(Vec<Track>, usize, usize) -> Result<(), String>,
+) -> Result<bool, String> {
+    let total = files.len();
+    let mut done = 0;
+    for chunk in files.chunks(SCAN_BATCH) {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+        let tracks: Vec<Track> = chunk.iter().map(|p| read_track(p)).collect();
+        done += tracks.len();
+        on_batch(tracks, done, total)?;
+    }
+    Ok(true)
+}
+
+/// The streamed-scan body, factored out so the registry entry is always cleaned
+/// up by the caller regardless of how this returns. Polls `cancel` between
+/// batches and emits a terminal `Cancelled` (instead of `Done`) when set.
+fn run_streamed_scan(
+    paths: &[String],
+    channel: &tauri::ipc::Channel<ScanEvent>,
+    cancel: &AtomicBool,
 ) -> Result<(), String> {
     let timing = timing_enabled();
     let t_all = std::time::Instant::now();
 
-    let files = collect_audio_files(&paths);
+    let files = collect_audio_files(paths);
     let total = files.len();
     channel
         .send(ScanEvent::Total { count: total })
         .map_err(|e| e.to_string())?;
 
-    let mut done = 0;
-    for chunk in files.chunks(SCAN_BATCH) {
-        let tracks: Vec<Track> = chunk.iter().map(|p| read_track(p)).collect();
-        done += tracks.len();
+    let completed = read_in_batches(&files, cancel, |tracks, done, total| {
         channel
             .send(ScanEvent::Batch { tracks })
             .map_err(|e| e.to_string())?;
         channel
             .send(ScanEvent::Progress { done, total })
-            .map_err(|e| e.to_string())?;
-    }
+            .map_err(|e| e.to_string())
+    })?;
 
-    channel.send(ScanEvent::Done).map_err(|e| e.to_string())?;
+    channel
+        .send(if completed {
+            ScanEvent::Done
+        } else {
+            ScanEvent::Cancelled
+        })
+        .map_err(|e| e.to_string())?;
+
     if timing {
         eprintln!(
-            "[timing] scan_paths_streamed: {} files in {} batches | {:.1}ms",
+            "[timing] scan_paths_streamed: {} files, {} | {:.1}ms",
             total,
-            total.div_ceil(SCAN_BATCH),
+            if completed { "done" } else { "cancelled" },
             t_all.elapsed().as_secs_f64() * 1e3,
         );
     }
@@ -855,5 +932,48 @@ mod tests {
         assert!(blocking.len() >= 9, "all files should produce rows");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 5: the registry flips a per-operation flag and forgets finished ids.
+    #[test]
+    fn op_registry_cancel_and_finish() {
+        let reg = OpRegistry::default();
+        let flag = reg.register("op1");
+        assert!(!flag.load(Ordering::SeqCst), "starts un-cancelled");
+        reg.request_cancel("op1");
+        assert!(flag.load(Ordering::SeqCst), "request_cancel sets the flag");
+        reg.finish("op1");
+        // Cancelling an unknown/finished id is a harmless no-op.
+        reg.request_cancel("op1");
+        reg.request_cancel("never-existed");
+    }
+
+    /// Phase 5: a cancel flag set before a batch stops the scan early; batches
+    /// delivered before that remain a valid prefix of the full scan.
+    #[test]
+    fn cancellation_stops_scan() {
+        let files: Vec<std::path::PathBuf> =
+            (0..3).map(|_| fixtures_dir().join("sample.flac")).collect();
+
+        // Not cancelled → reads everything.
+        let cancel = AtomicBool::new(false);
+        let mut seen = 0usize;
+        let completed = read_in_batches(&files, &cancel, |t, _, _| {
+            seen += t.len();
+            Ok(())
+        })
+        .unwrap();
+        assert!(completed && seen == files.len());
+
+        // Cancelled before the first batch → stops immediately, no batches.
+        let cancel = AtomicBool::new(true);
+        let mut batches = 0usize;
+        let completed = read_in_batches(&files, &cancel, |_, _, _| {
+            batches += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!completed, "should report not-completed when cancelled");
+        assert_eq!(batches, 0, "no batches once cancellation is set");
     }
 }

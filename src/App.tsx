@@ -3,6 +3,7 @@ import { Music } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
 import {
+  cancelOperation,
   getCoverArt,
   loadSession,
   pickFiles,
@@ -51,6 +52,10 @@ export default function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusIndex, setFocusIndex] = useState(0);
   const [busy, setBusy] = useState(false);
+  // True while a streamed scan is in flight (drives the Cancel button). The ref
+  // holds the current scan's operation id so Cancel can target it.
+  const [scanning, setScanning] = useState(false);
+  const scanOpRef = useRef<string | null>(null);
   const [message, setMessage] = useState("");
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(300);
@@ -183,6 +188,8 @@ export default function App() {
       let dupes = 0;
       let selectedFirst = !wasEmpty;
 
+      let cancelled = false;
+
       const ingest = (tracks: Track[]) => {
         const additions: Row[] = [];
         for (const t of tracks) {
@@ -208,46 +215,73 @@ export default function App() {
       };
 
       if (USE_STREAMING) {
-        await scanPathsStreamed(paths, (ev) => {
-          if (ev.event === "total") {
-            setMessage(
-              remember ? `Scanning… 0 of ${ev.data.count}` : `Restoring ${ev.data.count} files…`,
-            );
-          } else if (ev.event === "batch") {
-            ingest(ev.data.tracks);
-          } else if (ev.event === "progress") {
-            setMessage(
-              remember
-                ? `Scanning… ${ev.data.done} of ${ev.data.total}`
-                : `Restoring ${ev.data.done} of ${ev.data.total}…`,
-            );
-          }
-        });
+        const opId = crypto.randomUUID();
+        scanOpRef.current = opId;
+        setScanning(true);
+        try {
+          await scanPathsStreamed(paths, opId, (ev) => {
+            if (ev.event === "total") {
+              setMessage(
+                remember ? `Scanning… 0 of ${ev.data.count}` : `Restoring ${ev.data.count} files…`,
+              );
+            } else if (ev.event === "batch") {
+              ingest(ev.data.tracks);
+            } else if (ev.event === "progress") {
+              setMessage(
+                remember
+                  ? `Scanning… ${ev.data.done} of ${ev.data.total}`
+                  : `Restoring ${ev.data.done} of ${ev.data.total}…`,
+              );
+            } else if (ev.event === "cancelled") {
+              cancelled = true;
+            }
+          });
+        } finally {
+          setScanning(false);
+          scanOpRef.current = null;
+        }
       } else {
         ingest(await scanPaths(paths));
       }
 
-      // Track the source paths for session restore.
-      let sourcesChanged = false;
-      for (const p of paths) {
-        if (!sources.current.includes(p)) {
-          sources.current.push(p);
-          sourcesChanged = true;
+      // Track the source paths for session restore (skip if cancelled — the
+      // load was incomplete).
+      if (!cancelled) {
+        let sourcesChanged = false;
+        for (const p of paths) {
+          if (!sources.current.includes(p)) {
+            sources.current.push(p);
+            sourcesChanged = true;
+          }
         }
+        if (remember && sourcesChanged) void saveSession(sources.current);
       }
-      if (remember && sourcesChanged) void saveSession(sources.current);
 
-      setMessage(
-        dupes === 0
-          ? `Loaded ${added} file${added === 1 ? "" : "s"}`
-          : `Added ${added} new file${added === 1 ? "" : "s"} (${dupes} already loaded)`,
-      );
+      if (cancelled) {
+        setMessage(`Scan cancelled — loaded ${added} file${added === 1 ? "" : "s"}`);
+      } else {
+        setMessage(
+          dupes === 0
+            ? `Loaded ${added} file${added === 1 ? "" : "s"}`
+            : `Added ${added} new file${added === 1 ? "" : "s"} (${dupes} already loaded)`,
+        );
+      }
     } catch (e) {
       setMessage(`Error: ${String(e)}`);
     } finally {
       setBusy(false);
     }
   }, [clearHistory, commitRows]);
+
+  // Ask the in-flight scan to stop; the backend emits a terminal `cancelled`
+  // event and the rows already streamed in stay loaded.
+  const cancelScan = useCallback(() => {
+    const id = scanOpRef.current;
+    if (id) {
+      setMessage("Cancelling…");
+      void cancelOperation(id);
+    }
+  }, []);
 
   // ----- session restore (once, on startup) -----
   const didRestore = useRef(false);
@@ -748,6 +782,8 @@ export default function App() {
         hasFiles={!empty}
         modifiedCount={modifiedCount}
         busy={busy}
+        scanning={scanning}
+        onCancelScan={cancelScan}
         currentFile={empty ? undefined : currentFile}
       />
 

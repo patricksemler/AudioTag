@@ -8,9 +8,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(tags::OpRegistry::default())
         .invoke_handler(tauri::generate_handler![
             tags::scan_paths,
             tags::scan_paths_streamed,
+            tags::cancel_operation,
             tags::save_tracks,
             tags::get_cover_art,
             tags::read_all_tags,

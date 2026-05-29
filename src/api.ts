@@ -39,21 +39,29 @@ export type ScanEvent =
   | { event: "total"; data: { count: number } }
   | { event: "batch"; data: { tracks: Track[] } }
   | { event: "progress"; data: { done: number; total: number } }
+  | { event: "cancelled" }
   | { event: "done" };
 
 /**
  * Streaming scan: tags are read in batches and delivered via `onEvent` as they
  * arrive, so the UI can paint rows before the whole scan finishes. The returned
- * promise resolves when the scan is complete (after the final `done` event).
- * Concatenating every batch's tracks reproduces `scanPaths(paths)` exactly.
+ * promise resolves when the scan is complete (after the final `done` /
+ * `cancelled` event). Concatenating every batch's tracks reproduces
+ * `scanPaths(paths)` exactly. Pass `operationId` to a later `cancelOperation`.
  */
 export function scanPathsStreamed(
   paths: string[],
+  operationId: string,
   onEvent: (event: ScanEvent) => void,
 ): Promise<void> {
   const channel = new Channel<ScanEvent>();
   channel.onmessage = onEvent;
-  return invoke("scan_paths_streamed", { paths, channel });
+  return invoke("scan_paths_streamed", { paths, channel, operationId });
+}
+
+/** Ask a running cancellable operation (e.g. a scan) to stop. */
+export function cancelOperation(operationId: string): Promise<void> {
+  return invoke("cancel_operation", { operationId });
 }
 
 /** Write edits for the given tracks back to disk. */
