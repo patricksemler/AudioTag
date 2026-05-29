@@ -273,6 +273,11 @@ button[aria-pressed="true"] {
   min-width: 0;
   display: flex;
   position: relative;
+  /* Divider against the sidebar, matching the grid's row/column dividers. Placed
+     on the grid's right edge (not the sidebar's left) so the rows/columns butt
+     right up to it — the invisible resize handle sits on the far side and blends
+     into the sidebar. */
+  border-right: 1px solid var(--border);
 }
 
 /* ---------- file grid ---------- */
@@ -437,11 +442,10 @@ button[aria-pressed="true"] {
 .grid-header .cell:last-child,
 .grid-row .cell:last-child {
   border-right: none;
-  /* Stretch the last column to fill any space left between the columns and the
-     sidebar (its set width acts as a minimum; it grows to absorb the rest).
-     When the columns overflow the viewport instead, there's nothing extra to
-     absorb, so the set width stands and the grid scrolls horizontally. */
-  flex: 1 1 auto;
+  /* Grow the last column to fill space left between the columns and the sidebar,
+     but never shrink it below its set width (flex-shrink: 0): if its width
+     already exceeds the available space, it stays put and the grid scrolls. */
+  flex: 1 0 auto;
 }
 
 /* ---------- sortable / resizable column headers ---------- */
@@ -619,9 +623,6 @@ button[aria-pressed="true"] {
 .tag-editor {
   flex: 0 0 auto;
   background: var(--bg-panel);
-  /* A 1px divider at the sidebar's edge, matching the grid's row/column
-     dividers (the resize handle sits just to its left). */
-  border-left: 1px solid var(--border);
   padding: 12px;
   overflow-y: auto;
   overscroll-behavior: contain;
