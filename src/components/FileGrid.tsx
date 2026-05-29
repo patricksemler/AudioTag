@@ -37,7 +37,7 @@ interface FileGridProps {
   onContextMenu: (index: number, x: number, y: number) => void;
 }
 
-const ROW_HEIGHT = 30;
+const ROW_HEIGHT = 26;
 const MIN_COL = 48;
 
 // The fixed leading cover-art column. It sits left of every (reorderable) data
@@ -45,7 +45,7 @@ const MIN_COL = 48;
 // can't be reordered, resized, or sorted — and the column drag/resize maths,
 // which measure against the reorderable header, stay untouched.
 const THUMB_COL_W = 40; // cell width incl. padding
-const THUMB_PX = 28; // rendered image size (px)
+const THUMB_PX = 20; // rendered image size (px)
 
 // While dragging a header, the dragged column is pulled out (shown as a floating
 // ghost) and a "gap" placeholder of its width is inserted at the drop slot.
@@ -90,6 +90,8 @@ function CoverThumbImpl({ path, hasArt, pendingArt }: CoverThumbProps) {
     // Decorative: the file is identified by its filename cell, so the preview
     // adds no information for assistive tech (kept out of the a11y tree).
     <span className="cell cell-thumb" role="gridcell" aria-hidden="true">
+      {/* No art (or still loading) → leave the slot empty rather than draw a
+          placeholder swatch. */}
       {src ? (
         <img
           className="thumb-img"
@@ -99,9 +101,7 @@ function CoverThumbImpl({ path, hasArt, pendingArt }: CoverThumbProps) {
           height={THUMB_PX}
           draggable={false}
         />
-      ) : (
-        <span className="thumb-empty" />
-      )}
+      ) : null}
     </span>
   );
 }
