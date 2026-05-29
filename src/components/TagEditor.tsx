@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getCoverArt } from "../api";
+import { computeMixedValues } from "../edits";
 import { TAG_EDITOR_FIELDS, type FieldDef } from "../fields";
-import type { EditableField, Row } from "../types";
+import { EDITABLE_FIELDS, type EditableField, type Row } from "../types";
 
 interface TagEditorProps {
   selectedRows: Row[];
@@ -18,16 +19,6 @@ const PAIRED_TOTAL: Partial<Record<EditableField, EditableField>> = {
 };
 const TOTAL_FIELDS = new Set<EditableField>(["track_total", "disc_total"]);
 
-/** Returns the shared value across rows, or undefined if they differ ("mixed"). */
-function commonValue(rows: Row[], field: EditableField): string | undefined {
-  if (rows.length === 0) return "";
-  const first = rows[0][field] ?? "";
-  for (const r of rows) {
-    if ((r[field] ?? "") !== first) return undefined;
-  }
-  return first;
-}
-
 export function TagEditor({
   selectedRows,
   onFieldChange,
@@ -37,6 +28,14 @@ export function TagEditor({
   const count = selectedRows.length;
   const [art, setArt] = useState<string | null>(null);
   const [artLoading, setArtLoading] = useState(false);
+
+  // All fields' mixed/shared values in a single pass over the selection
+  // (was 12 separate O(selection) scans per render). Memoized on `selectedRows`,
+  // whose identity is now stable when the selection is unchanged. PLAN.md §9.
+  const mixedValues = useMemo(
+    () => computeMixedValues(selectedRows, EDITABLE_FIELDS),
+    [selectedRows],
+  );
 
   // The single selected file's cover-relevant fields. Depending on these
   // primitives (rather than the `selectedRows` array, whose identity churns on
@@ -84,7 +83,7 @@ export function TagEditor({
 
   /** Render a single labelled input for a field. */
   function renderInput(f: FieldDef, isFirst = false) {
-    const shared = commonValue(selectedRows, f.key);
+    const shared = mixedValues[f.key];
     const mixed = shared === undefined;
     const fieldId = `field-${f.key}`;
     const inputProps = {

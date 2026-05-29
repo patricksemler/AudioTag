@@ -20,6 +20,7 @@ import { TagEditor } from "./components/TagEditor";
 import { Toolbar } from "./components/Toolbar";
 import type { ColumnKey } from "./fields";
 import { EDITABLE_FIELDS, type CoverArt, type EditableField, type Row, type Track } from "./types";
+import { compileFind, isModified, replaceAllCount } from "./edits";
 
 /** Fields validated as numeric (UI-side). Excluded from "all text fields" replace. */
 const NUMERIC_FIELDS = new Set<EditableField>([
@@ -34,34 +35,12 @@ function toRow(track: Track): Row {
   return { ...track, id: track.path, modified: false };
 }
 
-function isModified(row: Row, original: Track): boolean {
-  if (row.art) return true; // pending cover art to write
-  if (row.has_art !== original.has_art) return true;
-  return EDITABLE_FIELDS.some((f) => (row[f] ?? "") !== (original[f] ?? ""));
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** Replace every occurrence of `find` in `haystack`, returning the result and hit count. */
-function replaceAllCount(
-  haystack: string,
-  find: string,
-  replacement: string,
-  matchCase: boolean,
-): { result: string; hits: number } {
-  const re = new RegExp(escapeRegExp(find), matchCase ? "g" : "gi");
-  let hits = 0;
-  const result = haystack.replace(re, () => {
-    hits++;
-    return replacement;
-  });
-  return { result, hits };
-}
-
 export default function App() {
   const [rows, setRows] = useState<Row[]>([]);
+  // Ids of rows with unsaved edits, kept in sync with `rows` through the single
+  // `commitRows` entry point below. Lets `modifiedCount` be O(1) (`.size`)
+  // instead of an O(total) scan on every render. PLAN.md §7.
+  const [dirtyIds, setDirtyIds] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusIndex, setFocusIndex] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -82,6 +61,15 @@ export default function App() {
   // Mirror of `rows` for use inside async callbacks (avoids stale closures).
   const rowsRef = useRef<Row[]>(rows);
   rowsRef.current = rows;
+
+  // The single place `rows` is replaced. Recomputes `dirtyIds` from the new
+  // array in the same pass, so the dirty set can never drift from `row.modified`
+  // (the per-row source of truth the grid renders). Every mutation routes
+  // through this. PLAN.md §7.
+  const commitRows = useCallback((next: Row[]) => {
+    setRows(next);
+    setDirtyIds(new Set(next.filter((r) => r.modified).map((r) => r.id)));
+  }, []);
   // Mirror of `focusIndex` so global shortcuts can read it without re-binding.
   const focusIndexRef = useRef(0);
   focusIndexRef.current = focusIndex;
@@ -130,9 +118,9 @@ export default function App() {
     const prev = undoStack.current.pop()!;
     redoStack.current.push(rowsRef.current);
     lastEditSig.current = null;
-    setRows(prev);
+    commitRows(prev);
     setMessage("Undo");
-  }, []);
+  }, [commitRows]);
 
   const redo = useCallback(() => {
     if (redoStack.current.length === 0) {
@@ -142,12 +130,30 @@ export default function App() {
     const next = redoStack.current.pop()!;
     undoStack.current.push(rowsRef.current);
     lastEditSig.current = null;
-    setRows(next);
+    commitRows(next);
     setMessage("Redo");
-  }, []);
+  }, [commitRows]);
 
-  const selectedRows = useMemo(() => rows.filter((r) => selected.has(r.id)), [rows, selected]);
-  const modifiedCount = useMemo(() => rows.filter((r) => r.modified).length, [rows]);
+  // Index rows by id, recomputed only when `rows` changes — so selection-only
+  // changes (arrow-key navigation) don't trigger an O(total) scan.
+  const rowsById = useMemo(() => {
+    const m = new Map<string, Row>();
+    for (const r of rows) m.set(r.id, r);
+    return m;
+  }, [rows]);
+
+  // O(selection): look the selected ids up in the index instead of filtering all
+  // rows. Stable identity when neither selection nor rows changed. PLAN.md §7.
+  const selectedRows = useMemo(() => {
+    const out: Row[] = [];
+    for (const id of selected) {
+      const r = rowsById.get(id);
+      if (r) out.push(r);
+    }
+    return out;
+  }, [selected, rowsById]);
+
+  const modifiedCount = dirtyIds.size;
 
   // ----- loading -----
   // `remember` controls whether the input paths are added to the persisted
@@ -164,7 +170,7 @@ export default function App() {
       const wasEmpty = rowsRef.current.length === 0;
       const next = [...rowsRef.current, ...additions];
       clearHistory(); // structural change — past snapshots no longer apply
-      setRows(next);
+      commitRows(next);
       if (wasEmpty && next.length > 0) {
         setSelected(new Set([next[0].id]));
         setFocusIndex(0);
@@ -191,7 +197,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [clearHistory]);
+  }, [clearHistory, commitRows]);
 
   // ----- session restore (once, on startup) -----
   const didRestore = useRef(false);
@@ -240,8 +246,8 @@ export default function App() {
     (field: EditableField, value: string) => {
       // Coalesce a typing burst into the same field/selection as one undo step.
       recordHistory(`field:${field}:${[...selected].sort().join(",")}`);
-      setRows((prev) =>
-        prev.map((r) => {
+      commitRows(
+        rowsRef.current.map((r) => {
           if (!selected.has(r.id)) return r;
           const updated = { ...r, [field]: value };
           const orig = originals.current.get(r.id);
@@ -250,15 +256,15 @@ export default function App() {
         }),
       );
     },
-    [selected, recordHistory],
+    [selected, recordHistory, commitRows],
   );
 
   // Edit a single row's field (used by inline double-click editing in the grid).
   const editCell = useCallback(
     (id: string, field: EditableField, value: string) => {
       recordHistory(null); // a committed inline edit is a discrete step
-      setRows((prev) =>
-        prev.map((r) => {
+      commitRows(
+        rowsRef.current.map((r) => {
           if (r.id !== id) return r;
           const updated = { ...r, [field]: value };
           const orig = originals.current.get(r.id);
@@ -267,7 +273,7 @@ export default function App() {
         }),
       );
     },
-    [recordHistory],
+    [recordHistory, commitRows],
   );
 
   // ----- sorting -----
@@ -293,7 +299,9 @@ export default function App() {
         : av.localeCompare(bv, undefined, { sensitivity: "base", numeric: true });
       return dir === "asc" ? cmp : -cmp;
     });
-    setRows(sorted);
+    // Reorder only — dirty membership is unchanged, but route through commitRows
+    // for the single-entry-point invariant.
+    commitRows(sorted);
     setSort({ key, dir });
     if (focusedId) {
       const ni = sorted.findIndex((r) => r.id === focusedId);
@@ -302,7 +310,7 @@ export default function App() {
         anchor.current = ni;
       }
     }
-  }, [sort]);
+  }, [sort, commitRows]);
 
   // ----- sidebar resize (drag the divider between the grid and the editor) -----
   const startSidebarResize = useCallback(
@@ -357,11 +365,11 @@ export default function App() {
     const next = rowsRef.current.filter((r) => !ids.has(r.id));
     ids.forEach((id) => originals.current.delete(id));
     clearHistory(); // structural change — past snapshots no longer apply
-    setRows(next);
+    commitRows(next);
     setSelected(new Set());
     setFocusIndex((fi) => Math.max(0, Math.min(fi, next.length - 1)));
     setMessage(`Removed ${ids.size} file${ids.size === 1 ? "" : "s"} from the list`);
-  }, [selected, clearHistory]);
+  }, [selected, clearHistory, commitRows]);
 
   const copyTags = useCallback(async (id: string) => {
     const row = rowsRef.current.find((r) => r.id === id);
@@ -392,8 +400,8 @@ export default function App() {
     const clip = tagClipboard.current;
     if (!clip) return;
     recordHistory(null);
-    setRows((prev) =>
-      prev.map((r) => {
+    commitRows(
+      rowsRef.current.map((r) => {
         if (!selected.has(r.id)) return r;
         const updated = { ...r, ...clip.fields };
         // Paste the copied cover when there is one; otherwise leave art as-is.
@@ -407,12 +415,12 @@ export default function App() {
       }),
     );
     setMessage(`Pasted tags into ${selected.size} file${selected.size === 1 ? "" : "s"}`);
-  }, [selected, recordHistory]);
+  }, [selected, recordHistory, commitRows]);
 
   const clearTags = useCallback(() => {
     recordHistory(null);
-    setRows((prev) =>
-      prev.map((r) => {
+    commitRows(
+      rowsRef.current.map((r) => {
         if (!selected.has(r.id)) return r;
         const cleared = { ...r };
         for (const f of EDITABLE_FIELDS) cleared[f] = "";
@@ -423,7 +431,7 @@ export default function App() {
       }),
     );
     setMessage(`Cleared tags on ${selected.size} file${selected.size === 1 ? "" : "s"}`);
-  }, [selected, recordHistory]);
+  }, [selected, recordHistory, commitRows]);
 
   // After editing additional tags, re-scan that file so its row reflects disk.
   const refreshRow = useCallback(async (path: string) => {
@@ -432,11 +440,11 @@ export default function App() {
       if (!track) return;
       const fresh = toRow(track);
       originals.current.set(path, { ...fresh });
-      setRows((prev) => prev.map((r) => (r.id === path ? fresh : r)));
+      commitRows(rowsRef.current.map((r) => (r.id === path ? fresh : r)));
     } catch {
       /* ignore — keep the existing row */
     }
-  }, []);
+  }, [commitRows]);
 
   // ----- batch find & replace -----
   // Operates on the current selection, or every loaded file when nothing is selected.
@@ -451,15 +459,18 @@ export default function App() {
       recordHistory(null);
       let changedFiles = 0;
       let totalHits = 0;
-      setRows((prev) =>
-        prev.map((r) => {
+      // Compile the find pattern once, then reuse it across every row × field
+      // (was recompiled per cell).
+      const re = compileFind(find, matchCase);
+      commitRows(
+        rowsRef.current.map((r) => {
           if (!targetIds.has(r.id)) return r;
           let next = r;
           let touched = false;
           for (const f of fields) {
             const cur = r[f] ?? "";
             if (!cur) continue;
-            const { result, hits } = replaceAllCount(cur, find, replace, matchCase);
+            const { result, hits } = replaceAllCount(cur, re, replace);
             if (hits > 0) {
               if (!touched) {
                 next = { ...r };
@@ -483,7 +494,7 @@ export default function App() {
           : `No matches for “${find}”`,
       );
     },
-    [selected, recordHistory],
+    [selected, recordHistory, commitRows],
   );
 
   // ----- save / revert -----
@@ -497,8 +508,8 @@ export default function App() {
       const okPaths = new Set(results.filter((x) => x.ok).map((x) => x.path));
       const failed = results.filter((x) => !x.ok);
       clearHistory(); // edits are now persisted; drop the undo trail
-      setRows((prev) =>
-        prev.map((r) => {
+      commitRows(
+        rowsRef.current.map((r) => {
           if (!okPaths.has(r.id)) return r;
           // Art is now embedded on disk; drop the pending payload.
           const saved = { ...r, art: null, modified: false };
@@ -516,19 +527,19 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [clearHistory]);
+  }, [clearHistory, commitRows]);
 
   const revert = useCallback(() => {
     recordHistory(null); // reverting is itself undoable
-    setRows((prev) =>
-      prev.map((r) => {
+    commitRows(
+      rowsRef.current.map((r) => {
         if (!r.modified) return r;
         const orig = originals.current.get(r.id);
         return orig ? { ...orig, id: r.id, modified: false } : r;
       }),
     );
     setMessage("Reverted unsaved changes");
-  }, [recordHistory]);
+  }, [recordHistory, commitRows]);
 
   // ----- selection -----
   const selectSingle = useCallback((index: number) => {

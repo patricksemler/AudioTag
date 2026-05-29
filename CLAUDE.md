@@ -11,6 +11,7 @@ pnpm tauri dev            # run the desktop app
 pnpm build                # typecheck (tsc) + vite build the frontend
 pnpm typecheck            # tsc --noEmit
 pnpm lint                 # eslint (includes jsx-a11y)
+pnpm test                 # vitest (frontend unit tests)
 cd src-tauri && cargo check     # compile-check Rust
 cd src-tauri && cargo clippy    # lint Rust
 cd src-tauri && cargo fmt       # format Rust
@@ -47,6 +48,11 @@ cross-compile). Run on a Mac to get the macOS build.
   screen reader). Target WCAG 2.2 AA.
 - WMA/ASF is intentionally unsupported (lofty can't write it).
 - Editable tag fields are strings end-to-end; numeric validation is UI-side.
+- In `App.tsx`, all `rows` replacements go through the single `commitRows`
+  helper, which keeps `dirtyIds` in sync with each row's `modified` flag — don't
+  call `setRows` directly. Pure edit/dirty/mixed-value logic lives in `edits.ts`
+  (unit-tested in `edits.test.ts`); grid rows are memoized (`GridRow`), so any
+  prop passed to a row must keep a stable identity.
 
 ## Keep docs in sync (definition of done)
 
