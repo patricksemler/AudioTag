@@ -8,6 +8,7 @@ import {
   loadSession,
   pickFiles,
   pickFolder,
+  saveChanges,
   saveSession,
   saveTracks,
   scanPaths,
@@ -52,10 +53,12 @@ export default function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusIndex, setFocusIndex] = useState(0);
   const [busy, setBusy] = useState(false);
-  // True while a streamed scan is in flight (drives the Cancel button). The ref
-  // holds the current scan's operation id so Cancel can target it.
+  // True while a streamed scan / save is in flight (each drives a Cancel
+  // button). The ref holds the current cancellable operation's id so Cancel can
+  // target it; only one such operation runs at a time (guarded by `busy`).
   const [scanning, setScanning] = useState(false);
-  const scanOpRef = useRef<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const opIdRef = useRef<string | null>(null);
   const [message, setMessage] = useState("");
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(300);
@@ -216,7 +219,7 @@ export default function App() {
 
       if (USE_STREAMING) {
         const opId = crypto.randomUUID();
-        scanOpRef.current = opId;
+        opIdRef.current = opId;
         setScanning(true);
         try {
           await scanPathsStreamed(paths, opId, (ev) => {
@@ -238,7 +241,7 @@ export default function App() {
           });
         } finally {
           setScanning(false);
-          scanOpRef.current = null;
+          opIdRef.current = null;
         }
       } else {
         ingest(await scanPaths(paths));
@@ -273,10 +276,11 @@ export default function App() {
     }
   }, [clearHistory, commitRows]);
 
-  // Ask the in-flight scan to stop; the backend emits a terminal `cancelled`
-  // event and the rows already streamed in stay loaded.
-  const cancelScan = useCallback(() => {
-    const id = scanOpRef.current;
+  // Ask the in-flight scan or save to stop; the backend emits a terminal
+  // `cancelled` event. Rows already streamed in stay loaded; files already
+  // saved stay clean, the rest stay dirty.
+  const cancelOp = useCallback(() => {
+    const id = opIdRef.current;
     if (id) {
       setMessage("Cancelling…");
       void cancelOperation(id);
@@ -586,11 +590,48 @@ export default function App() {
     const dirty = rowsRef.current.filter((r) => r.modified && !r.error);
     if (dirty.length === 0) return;
     setBusy(true);
-    setMessage(`Saving ${dirty.length} files…`);
+    setMessage(`Saving ${dirty.length} file${dirty.length === 1 ? "" : "s"}…`);
+    const payload = dirty.map((r) => ({ ...r }));
+    // Only paths the backend confirmed `ok` are cleared; failed and (on cancel)
+    // not-yet-attempted rows stay dirty.
+    const okPaths = new Set<string>();
+    let firstError: string | null = null;
+    let failedCount = 0;
+    let cancelled = false;
     try {
-      const results = await saveTracks(dirty.map((r) => ({ ...r })));
-      const okPaths = new Set(results.filter((x) => x.ok).map((x) => x.path));
-      const failed = results.filter((x) => !x.ok);
+      if (USE_STREAMING) {
+        const opId = crypto.randomUUID();
+        opIdRef.current = opId;
+        setSaving(true);
+        try {
+          await saveChanges(payload, opId, (ev) => {
+            if (ev.event === "saved") {
+              if (ev.data.ok) okPaths.add(ev.data.path);
+              else {
+                failedCount++;
+                if (firstError === null) firstError = ev.data.error;
+              }
+            } else if (ev.event === "progress") {
+              setMessage(`Saving ${ev.data.done} of ${ev.data.total}…`);
+            } else if (ev.event === "cancelled") {
+              cancelled = true;
+            }
+          });
+        } finally {
+          setSaving(false);
+          opIdRef.current = null;
+        }
+      } else {
+        const results = await saveTracks(payload);
+        for (const x of results) {
+          if (x.ok) okPaths.add(x.path);
+          else {
+            failedCount++;
+            if (firstError === null) firstError = x.error;
+          }
+        }
+      }
+
       clearHistory(); // edits are now persisted; drop the undo trail
       commitRows(
         rowsRef.current.map((r) => {
@@ -601,11 +642,14 @@ export default function App() {
           return saved;
         }),
       );
-      setMessage(
-        failed.length === 0
-          ? `Saved ${okPaths.size} files`
-          : `Saved ${okPaths.size}, ${failed.length} failed (${failed[0].error ?? "unknown"})`,
-      );
+
+      if (cancelled) {
+        setMessage(`Save cancelled — saved ${okPaths.size} file${okPaths.size === 1 ? "" : "s"}`);
+      } else if (failedCount === 0) {
+        setMessage(`Saved ${okPaths.size} file${okPaths.size === 1 ? "" : "s"}`);
+      } else {
+        setMessage(`Saved ${okPaths.size}, ${failedCount} failed (${firstError ?? "unknown"})`);
+      }
     } catch (e) {
       setMessage(`Save error: ${String(e)}`);
     } finally {
@@ -783,7 +827,8 @@ export default function App() {
         modifiedCount={modifiedCount}
         busy={busy}
         scanning={scanning}
-        onCancelScan={cancelScan}
+        saving={saving}
+        onCancel={cancelOp}
         currentFile={empty ? undefined : currentFile}
       />
 

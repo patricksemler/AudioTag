@@ -14,6 +14,7 @@ pub fn run() {
             tags::scan_paths_streamed,
             tags::cancel_operation,
             tags::save_tracks,
+            tags::save_changes,
             tags::get_cover_art,
             tags::read_all_tags,
             tags::save_all_tags,

@@ -69,6 +69,29 @@ export function saveTracks(tracks: Track[]): Promise<SaveResult[]> {
   return invoke<SaveResult[]>("save_tracks", { tracks });
 }
 
+/** A streamed-save event (mirrors the Rust `SaveEvent` enum). */
+export type SaveEvent =
+  | { event: "saved"; data: { path: string; ok: boolean; error: string | null } }
+  | { event: "progress"; data: { done: number; total: number } }
+  | { event: "cancelled" }
+  | { event: "done" };
+
+/**
+ * Streaming, cancellable save: writes one file at a time, reporting each via
+ * `onEvent` so the UI can show progress and clear dirty rows as they persist.
+ * Resolves after the terminal `done` / `cancelled` event. Files reported
+ * `saved` with `ok: true` are persisted even if later cancelled.
+ */
+export function saveChanges(
+  tracks: Track[],
+  operationId: string,
+  onEvent: (event: SaveEvent) => void,
+): Promise<void> {
+  const channel = new Channel<SaveEvent>();
+  channel.onmessage = onEvent;
+  return invoke("save_changes", { tracks, channel, operationId });
+}
+
 /** Lazily fetch embedded cover art for one file. */
 export function getCoverArt(path: string): Promise<CoverArt | null> {
   return invoke<CoverArt | null>("get_cover_art", { path });

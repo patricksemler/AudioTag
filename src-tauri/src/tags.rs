@@ -585,6 +585,97 @@ pub fn save_tracks(tracks: Vec<Track>) -> Vec<SaveResult> {
     results
 }
 
+/// A streamed-save event sent over the per-operation [`Channel`].
+#[derive(Clone, Serialize)]
+#[serde(tag = "event", content = "data", rename_all = "camelCase")]
+pub enum SaveEvent {
+    /// One file's outcome (mirrors [`SaveResult`]).
+    Saved {
+        path: String,
+        ok: bool,
+        error: Option<String>,
+    },
+    /// Files written so far / total.
+    Progress { done: usize, total: usize },
+    /// Terminal: cancelled. Files reported `Saved { ok: true }` before this are
+    /// persisted; the rest were not touched and stay dirty on the client.
+    Cancelled,
+    /// Terminal: all files attempted.
+    Done,
+}
+
+/// Streaming, cancellable variant of [`save_tracks`]: writes one file at a time
+/// (sequential by design — concurrent writes to the same tree risk lock and
+/// correctness issues, PLAN.md §5.4), emitting a `Saved` result per file and
+/// `Progress` updates, and stopping early on cancellation. Keeps `save_tracks`
+/// for rollback.
+#[tauri::command]
+pub fn save_changes(
+    tracks: Vec<Track>,
+    channel: tauri::ipc::Channel<SaveEvent>,
+    operation_id: String,
+    registry: tauri::State<OpRegistry>,
+) -> Result<(), String> {
+    let cancel = registry.register(&operation_id);
+    let result = run_save(tracks, &channel, &cancel);
+    registry.finish(&operation_id);
+    result
+}
+
+fn run_save(
+    tracks: Vec<Track>,
+    channel: &tauri::ipc::Channel<SaveEvent>,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let mut send_err: Option<String> = None;
+    let completed = save_each(tracks, cancel, |path, ok, error, done, total| {
+        if send_err.is_some() {
+            return;
+        }
+        let r = channel
+            .send(SaveEvent::Saved { path, ok, error })
+            .and_then(|()| channel.send(SaveEvent::Progress { done, total }));
+        if let Err(e) = r {
+            send_err = Some(e.to_string());
+        }
+    });
+    if let Some(e) = send_err {
+        return Err(e);
+    }
+    channel
+        .send(if completed {
+            SaveEvent::Done
+        } else {
+            SaveEvent::Cancelled
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Write each track sequentially, polling `cancel` before each and invoking
+/// `on_result(path, ok, error, done, total)` per file. Returns `true` if all
+/// were attempted, `false` if cancellation stopped it early (already-written
+/// files stay written; the rest are untouched). Channel-free so it can be
+/// unit-tested directly (`save_each_*`). PLAN.md §5.4.
+fn save_each(
+    tracks: Vec<Track>,
+    cancel: &AtomicBool,
+    mut on_result: impl FnMut(String, bool, Option<String>, usize, usize),
+) -> bool {
+    let total = tracks.len();
+    for (i, t) in tracks.into_iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        let (ok, error) = match write_track(&t) {
+            Ok(()) => (true, None),
+            Err(e) => (false, Some(e)),
+        };
+        on_result(t.path, ok, error, i + 1, total);
+    }
+    true
+}
+
 /// Lazily fetch the first embedded cover art for a single file, base64-encoded.
 #[tauri::command]
 pub fn get_cover_art(path: String) -> Option<CoverArt> {
@@ -1048,5 +1139,85 @@ mod tests {
                 "read_slice(workers={workers}) must match sequential"
             );
         }
+    }
+
+    /// Build a temp dir with `n` writable WAV copies; returns (dir, paths).
+    fn temp_wavs(n: usize) -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "audiotag_save_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = (0..n)
+            .map(|i| {
+                let p = dir.join(format!("f{i}.wav"));
+                std::fs::write(&p, minimal_wav()).unwrap();
+                p
+            })
+            .collect();
+        (dir, paths)
+    }
+
+    /// Phase 7: `save_each` reports one ok result per file and round-trips edits.
+    #[test]
+    fn save_each_reports_per_file() {
+        let (dir, paths) = temp_wavs(3);
+        let tracks: Vec<Track> = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| Track {
+                title: Some(format!("Title {i}")),
+                ..read_track(p)
+            })
+            .collect();
+
+        let cancel = AtomicBool::new(false);
+        let mut results = Vec::new();
+        let completed = save_each(tracks, &cancel, |path, ok, _err, _d, _t| {
+            results.push((path, ok));
+        });
+        assert!(completed);
+        assert_eq!(results.len(), 3);
+        assert!(results.iter().all(|(_, ok)| *ok));
+        for (i, p) in paths.iter().enumerate() {
+            assert_eq!(read_track(p).title, Some(format!("Title {i}")));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 7: cancelling mid-save stops before later files — already-written
+    /// files persist; untouched files keep their old tags and stay "dirty".
+    #[test]
+    fn save_each_cancel_midway() {
+        let (dir, paths) = temp_wavs(3);
+        let tracks: Vec<Track> = paths
+            .iter()
+            .map(|p| Track {
+                title: Some("Edited".into()),
+                ..read_track(p)
+            })
+            .collect();
+
+        // Request cancellation right after the first file is written, so the
+        // second iteration's pre-check stops the loop.
+        let cancel = AtomicBool::new(false);
+        let mut written = Vec::new();
+        let completed = save_each(tracks, &cancel, |path, ok, _e, _d, _t| {
+            written.push(path);
+            cancel.store(true, Ordering::SeqCst);
+            assert!(ok);
+        });
+        assert!(!completed, "cancellation should report not-completed");
+        assert_eq!(written.len(), 1, "only the first file should be written");
+
+        assert_eq!(read_track(&paths[0]).title.as_deref(), Some("Edited"));
+        assert_eq!(read_track(&paths[1]).title, None);
+        assert_eq!(read_track(&paths[2]).title, None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

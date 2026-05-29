@@ -64,6 +64,8 @@ adheres to [Semantic Versioning](https://semver.org/).
   batches and shows "Scanning… N of M" progress, instead of a blank wait until
   the entire folder finishes. A **Cancel** button stops a long scan, keeping the
   files loaded so far.
+- Saving many files now shows "Saving N of M" progress and can be **cancelled** —
+  files already written stay saved; the rest keep their unsaved marker.
 - Folder scanning is faster: reads now skip parsing audio-stream properties
   (duration/bitrate) that the app never displays — up to ~50% less per-file
   parse time on compressed formats (m4a/ogg/opus) — and files are read with

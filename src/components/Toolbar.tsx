@@ -10,9 +10,10 @@ interface ToolbarProps {
   hasFiles: boolean;
   modifiedCount: number;
   busy: boolean;
-  /** True while a scan is streaming in; shows a Cancel button. */
+  /** True while a scan / save is in flight; either shows a Cancel button. */
   scanning: boolean;
-  onCancelScan: () => void;
+  saving: boolean;
+  onCancel: () => void;
   /** Filename of the currently focused file, shown so users know what they're editing. */
   currentFile?: string;
 }
@@ -28,8 +29,12 @@ export function Toolbar(props: ToolbarProps) {
         <button type="button" onClick={props.onOpenFiles} disabled={props.busy}>
           <Files size={16} aria-hidden="true" /> Open Files
         </button>
-        {props.scanning && (
-          <button type="button" onClick={props.onCancelScan} aria-label="Cancel scan">
+        {(props.scanning || props.saving) && (
+          <button
+            type="button"
+            onClick={props.onCancel}
+            aria-label={props.saving ? "Cancel save" : "Cancel scan"}
+          >
             <X size={16} aria-hidden="true" /> Cancel
           </button>
         )}
