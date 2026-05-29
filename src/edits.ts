@@ -1,5 +1,5 @@
 // Pure helpers for edit/dirty/find-replace/mixed-value logic. Kept free of React
-// so they can be unit-tested directly (see edits.test.ts). PLAN.md §3/§9/§10.
+// so they can be unit-tested directly (see edits.test.ts).
 
 import { EDITABLE_FIELDS, type EditableField, type Row, type Track } from "./types";
 

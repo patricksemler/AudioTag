@@ -39,7 +39,8 @@ cross-compile). Run on a Mac to get the macOS build.
 - `bench/` — performance harness: `BASELINE.md` (captured numbers),
   `README.md` (how to run), `profiling.md` (frontend procedure). Corpus
   generator is `scripts/gen-corpus.sh`; criterion benches are
-  `src-tauri/benches/scan.rs`. The optimization roadmap is `PLAN.md`.
+  `src-tauri/benches/scan.rs`. The original optimization roadmap (now fully
+  implemented) is archived at `docs/archive/PLAN.md`.
 
 ## Conventions
 

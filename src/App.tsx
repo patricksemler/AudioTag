@@ -40,7 +40,7 @@ function toRow(track: Track): Row {
 
 /**
  * Use the streaming scan (rows paint as they load) vs the blocking `scan_paths`.
- * A flag so we can fall back instantly if streaming ever misbehaves. PLAN.md §5.3.
+ * A flag so we can fall back instantly if streaming ever misbehaves.
  */
 const USE_STREAMING = true;
 
@@ -48,7 +48,7 @@ export default function App() {
   const [rows, setRows] = useState<Row[]>([]);
   // Ids of rows with unsaved edits, kept in sync with `rows` through the single
   // `commitRows` entry point below. Lets `modifiedCount` be O(1) (`.size`)
-  // instead of an O(total) scan on every render. PLAN.md §7.
+  // instead of an O(total) scan on every render.
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusIndex, setFocusIndex] = useState(0);
@@ -80,7 +80,7 @@ export default function App() {
   // The single place `rows` is replaced. Recomputes `dirtyIds` from the new
   // array in the same pass, so the dirty set can never drift from `row.modified`
   // (the per-row source of truth the grid renders). Every mutation routes
-  // through this. PLAN.md §7.
+  // through this.
   const commitRows = useCallback((next: Row[]) => {
     setRows(next);
     setDirtyIds(new Set(next.filter((r) => r.modified).map((r) => r.id)));
@@ -163,7 +163,7 @@ export default function App() {
   }, [rows]);
 
   // O(selection): look the selected ids up in the index instead of filtering all
-  // rows. Stable identity when neither selection nor rows changed. PLAN.md §7.
+  // rows. Stable identity when neither selection nor rows changed.
   const selectedRows = useMemo(() => {
     const out: Row[] = [];
     for (const id of selected) {
@@ -188,7 +188,7 @@ export default function App() {
       // accumulator (not rowsRef, which only updates on render) is the source of
       // truth while batches stream in, so batches arriving faster than React can
       // re-render never drop rows. Selection is set only on the first batch when
-      // the list started empty, so streaming never steals focus (PLAN.md §12).
+      // the list started empty, so streaming never steals focus
       const known = new Set(rowsRef.current.map((r) => r.id));
       const wasEmpty = rowsRef.current.length === 0;
       let acc = rowsRef.current;

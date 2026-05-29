@@ -139,7 +139,7 @@ fn ext_upper(path: &Path) -> String {
 
 /// True when `AUDIOTAG_TIMING=1` is set — gates dev-only timing spans printed to
 /// stderr (visible in the `pnpm tauri dev` console). Off by default; no release
-/// cost beyond an env lookup at the start of a scan/save. See PLAN.md §4.3.
+/// cost beyond an env lookup at the start of a scan/save.
 fn timing_enabled() -> bool {
     std::env::var("AUDIOTAG_TIMING")
         .map(|v| v == "1")
@@ -332,12 +332,12 @@ fn collect_audio_files(paths: &[String]) -> Vec<std::path::PathBuf> {
 }
 
 /// How many tracks the streamed scan reads before flushing a batch to the
-/// client. Balances first-paint latency against React update spam. PLAN.md §5.3.
+/// client. Balances first-paint latency against React update spam.
 const SCAN_BATCH: usize = 200;
 
 /// Upper bound on reader threads. Conservative so a single spinning disk can't
 /// thrash and memory stays bounded (each in-flight read may briefly hold one
-/// file's cover). PLAN.md §5.2.
+/// file's cover).
 const MAX_SCAN_WORKERS: usize = 8;
 
 /// Reader-thread count for this machine: `min(cores, MAX_SCAN_WORKERS)`.
@@ -351,7 +351,7 @@ fn scan_workers() -> usize {
 /// Read a slice of files into `Track`s, preserving input order. Reads in
 /// parallel across up to `workers` threads by splitting into contiguous chunks
 /// (so reassembly is just concatenation — byte-identical to a sequential read).
-/// Falls back to sequential for tiny slices or a single worker. PLAN.md §5.2.
+/// Falls back to sequential for tiny slices or a single worker.
 fn read_slice(files: &[std::path::PathBuf], workers: usize) -> Vec<Track> {
     let n = files.len();
     if workers <= 1 || n <= 1 {
@@ -390,7 +390,7 @@ pub enum ScanEvent {
 
 /// Registry of in-flight cancellable operations, keyed by a client-supplied
 /// operation id. Each entry is an `AtomicBool` the operation polls between
-/// batches; `cancel_operation` flips it. Managed as Tauri app state. PLAN.md §5.
+/// batches; `cancel_operation` flips it. Managed as Tauri app state.
 #[derive(Default)]
 pub struct OpRegistry(Mutex<HashMap<String, Arc<AtomicBool>>>);
 
@@ -457,7 +457,7 @@ pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
 /// tags in batches, emitting events over `channel` so the UI can paint rows as
 /// they arrive instead of waiting for the whole scan. Concatenating every
 /// `Batch`'s tracks in arrival order yields exactly `scan_paths(paths)` (proven
-/// by `streamed_scan_matches_blocking`). PLAN.md §5.3.
+/// by `streamed_scan_matches_blocking`).
 #[tauri::command]
 pub fn scan_paths_streamed(
     paths: Vec<String>,
@@ -606,7 +606,7 @@ pub enum SaveEvent {
 
 /// Streaming, cancellable variant of [`save_tracks`]: writes one file at a time
 /// (sequential by design — concurrent writes to the same tree risk lock and
-/// correctness issues, PLAN.md §5.4), emitting a `Saved` result per file and
+/// correctness issues), emitting a `Saved` result per file and
 /// `Progress` updates, and stopping early on cancellation. Keeps `save_tracks`
 /// for rollback.
 #[tauri::command]
@@ -656,7 +656,7 @@ fn run_save(
 /// `on_result(path, ok, error, done, total)` per file. Returns `true` if all
 /// were attempted, `false` if cancellation stopped it early (already-written
 /// files stay written; the rest are untouched). Channel-free so it can be
-/// unit-tested directly (`save_each_*`). PLAN.md §5.4.
+/// unit-tested directly (`save_each_*`).
 fn save_each(
     tracks: Vec<Track>,
     cancel: &AtomicBool,
@@ -967,7 +967,7 @@ mod tests {
 
     /// Phase 1: disabling audio-property parsing must produce a byte-identical
     /// `Track` for every format (we never display properties). Guards the
-    /// `read_properties(false)` optimization. See PLAN.md §5.1.
+    /// `read_properties(false)` optimization.
     #[test]
     fn properties_off_parity() {
         let dir = fixtures_dir();
@@ -990,7 +990,7 @@ mod tests {
 
     /// Phase 1: `has_art` must stay accurate with the property-off read (cover
     /// art is still parsed). An art-bearing file reads `has_art = true`; a
-    /// plain file reads `false`. See PLAN.md §5.1 / H3.
+    /// plain file reads `false`.
     #[test]
     fn has_art_parity() {
         let dir = fixtures_dir();
@@ -1003,7 +1003,7 @@ mod tests {
     }
 
     /// Corrupt/unreadable files must not panic or abort the scan: they surface
-    /// as errored rows while valid files still read. See PLAN.md §13 / H11.
+    /// as errored rows while valid files still read.
     #[test]
     fn scan_survives_corrupt_files() {
         let mut dir = std::env::temp_dir();
@@ -1031,7 +1031,7 @@ mod tests {
     /// Phase 4: concatenating the streamed scan's batches (in arrival order)
     /// must equal `scan_paths` exactly — same order, same tracks, including
     /// errored rows. The command sends these same chunks over the channel, so
-    /// this proves client-side reassembly parity. See PLAN.md §5.3.
+    /// this proves client-side reassembly parity.
     #[test]
     fn streamed_scan_matches_blocking() {
         let mut dir = std::env::temp_dir();
@@ -1117,7 +1117,7 @@ mod tests {
 
     /// Phase 6: bounded-parallel reading must yield byte-identical results (same
     /// order, same tracks) as sequential — concurrency is an optimization, not a
-    /// behavior change. See PLAN.md §5.2.
+    /// behavior change.
     #[test]
     fn parallel_read_matches_sequential() {
         // A heterogeneous, deliberately unsorted list so chunk boundaries matter.

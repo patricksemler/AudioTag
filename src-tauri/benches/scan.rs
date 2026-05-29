@@ -6,8 +6,6 @@
 //!
 //!   scripts/gen-corpus.sh              # generate corpora first
 //!   cargo bench --manifest-path src-tauri/Cargo.toml
-//!
-//! See PLAN.md §4.3.
 
 use audiotag_lib::tags::{
     read_track, read_track_opt, scan_files_for_bench, scan_paths, write_track, Track,
@@ -62,7 +60,7 @@ fn bench_read_per_format(c: &mut Criterion) {
 /// `read_track` over art-bearing files. Cover art is materialized either way
 /// (needed for `has_art`); this isolates the property-parsing delta on big
 /// files and documents the cover-materialization cost the streaming/concurrency
-/// phases bound the RSS of. See PLAN.md H3.
+/// phases bound the RSS of.
 fn bench_read_art(c: &mut Criterion) {
     let art = data_dir().join("art-heavy");
     let mut group = c.benchmark_group("read_track_art");
