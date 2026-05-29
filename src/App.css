@@ -273,11 +273,6 @@ button[aria-pressed="true"] {
   min-width: 0;
   display: flex;
   position: relative;
-  /* A small gutter around the grid (above the header, below the list, and at
-     the sides) gives the drag-over dashed border clear space to sit in instead
-     of cutting across the header text or the rows. */
-  padding: 6px;
-  background: var(--bg-panel);
 }
 
 /* ---------- file grid ---------- */
@@ -289,6 +284,13 @@ button[aria-pressed="true"] {
   /* Slightly smaller than the app default (14px) for a denser, more native
      file list. */
   font-size: 13px;
+  /* Header stays flush at the top; the gutter sits *between* the header and the
+     list (flex gap), with a matching gap below the list. This is also where the
+     drag-over dashed border sits. */
+  gap: 6px;
+  padding-bottom: 6px;
+  position: relative;
+  background: var(--bg-panel);
   /* Clip the (wider-than-panel) header so it can't bleed over the sidebar; the
      body scrolls horizontally and the header is kept in sync programmatically.
      This is what lets the grid actually shrink/grow with the sidebar. */
@@ -599,17 +601,18 @@ button[aria-pressed="true"] {
 .sidebar-resizer {
   flex: 0 0 6px;
   align-self: stretch;
-  /* No standing divider bar; the grid and sidebar sit flush. The handle is
-     still draggable, and hints with a faint line only on hover/focus. */
+  /* No visible bar at all — the grid and sidebar sit flush and the user just
+     drags this (col-resize) edge to resize. */
   background: transparent;
   cursor: col-resize;
   touch-action: none;
 }
 
-.sidebar-resizer:hover,
+/* Keep a focus ring for keyboard users (the handle is still operable with the
+   arrow keys), but nothing on hover. */
 .sidebar-resizer:focus-visible {
-  background: var(--border);
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* ---------- tag editor ---------- */
@@ -790,7 +793,7 @@ button[aria-pressed="true"] {
    - Empty state: the whole workspace is the target (no sidebar yet).
    - With files loaded: only the file grid, so the editor sidebar stays clear. */
 .workspace.drag-over:has(.welcome)::after,
-.workspace.drag-over .files-panel::after {
+.workspace.drag-over .grid-wrap::after {
   content: "";
   position: absolute;
   border: 2px dashed var(--accent);
@@ -804,10 +807,13 @@ button[aria-pressed="true"] {
   inset: 6px;
 }
 
-/* Files loaded: the file grid carries a 6px gutter, so sit the dashed border
-   inside it, leaving a small gap from the header/rows. */
-.workspace.drag-over .files-panel::after {
-  inset: 2px;
+/* Files loaded: wrap the list, sitting in the gap below the 24px-tall header
+   (see .grid-header height) and in the bottom gap, clear of the header/rows. */
+.workspace.drag-over .grid-wrap::after {
+  top: 26px;
+  left: 2px;
+  right: 2px;
+  bottom: 2px;
 }
 
 /* ---------- context menu ---------- */
