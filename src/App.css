@@ -442,10 +442,23 @@ button[aria-pressed="true"] {
 .grid-header .cell:last-child,
 .grid-row .cell:last-child {
   border-right: none;
-  /* Grow the last column to fill space left between the columns and the sidebar,
-     but never shrink it below its set width (flex-shrink: 0): if its width
-     already exceeds the available space, it stays put and the grid scrolls. */
-  flex: 1 0 auto;
+}
+
+/* Filler that eats the space between the last real column and the sidebar so
+   there's no empty gap — without ever resizing the column itself, so expanding
+   the sidebar can't shrink it (and truncate its text). `flex-basis: 0` makes it
+   zero-width when the columns already fill or overflow the viewport. */
+.cell-fill {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0;
+}
+
+/* The last real column sits directly before the filler; drop its divider so the
+   two read as one continuous cell (the column appears to extend to the edge). */
+.grid-header .cell:has(+ .cell-fill),
+.grid-row .cell:has(+ .cell-fill) {
+  border-right: none;
 }
 
 /* ---------- sortable / resizable column headers ---------- */

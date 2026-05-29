@@ -57,8 +57,9 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 - The file grid is now denser — slightly shorter rows and smaller text — to fit
   more files on screen.
-- The last grid column now stretches to fill any leftover space up to the tag
-  editor, so there's no empty gap when the columns are narrower than the grid.
+- The grid now fills any leftover space between the last column and the tag
+  editor, so there's no empty gap — and resizing the sidebar no longer shrinks
+  or truncates the last column.
 - Dragging files or folders over the window now outlines the drop target (the
   file grid, or the whole workspace when empty) with a dashed accent border
   instead of dimming the whole app behind a centered card.

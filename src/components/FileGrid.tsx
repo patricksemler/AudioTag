@@ -240,6 +240,10 @@ function GridRowImpl(props: GridRowProps) {
           </span>
         );
       })}
+      {/* Fills any space left between the last column and the sidebar so there's
+          no empty gap, without resizing the column itself (it merges visually —
+          no divider — so the last column appears to extend to the edge). */}
+      <span className="cell cell-fill" aria-hidden="true" />
     </div>
   );
 }
@@ -804,6 +808,7 @@ export function FileGrid(props: FileGridProps) {
             </span>
           );
           })}
+          <span className="cell cell-head cell-fill" aria-hidden="true" />
         </div>
       </div>
 
