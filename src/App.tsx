@@ -874,11 +874,6 @@ export default function App() {
 
   return (
     <div className="app">
-      {dragOver && (
-        <div className="drop-overlay" aria-hidden="true">
-          <div className="drop-overlay-card">Drop files or folders to open</div>
-        </div>
-      )}
       <Toolbar
         onOpenFolder={openFolder}
         onOpenFiles={openFiles}
@@ -904,7 +899,7 @@ export default function App() {
         />
       )}
 
-      <main className="workspace">
+      <main className={`workspace${dragOver ? " drag-over" : ""}`}>
         {empty ? (
           <div className="welcome">
             <h1>

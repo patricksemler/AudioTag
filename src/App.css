@@ -265,6 +265,7 @@ button[aria-pressed="true"] {
   flex: 1 1 auto;
   display: flex;
   min-height: 0;
+  position: relative;
 }
 
 .files-panel {
@@ -723,26 +724,20 @@ button[aria-pressed="true"] {
   margin-top: 16px;
 }
 
-/* ---------- drag & drop overlay ---------- */
-.drop-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-  pointer-events: none;
-}
-
-.drop-overlay-card {
-  padding: 18px 26px;
+/* ---------- drag & drop ---------- */
+/* While dragging files over the window, outline the workspace with a dashed
+   accent border instead of overlaying the whole app. We draw the border on a
+   pseudo-element layered above the workspace content (rather than an inset
+   outline) so it stays visible even when an opaque grid/editor fills the box. */
+.workspace.drag-over::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
   border: 2px dashed var(--accent);
-  border-radius: 12px;
-  background: var(--bg-panel);
-  color: var(--text);
-  font-weight: 600;
-  box-shadow: 0 8px 30px rgb(0 0 0 / 25%);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  pointer-events: none;
+  z-index: 200;
 }
 
 /* ---------- context menu ---------- */

@@ -52,6 +52,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Dragging files or folders over the window now outlines the workspace with a
+  dashed accent border instead of dimming the whole app behind a centered card.
 - Replaced emoji UI glyphs with [lucide](https://lucide.dev) icons for
   consistent cross-platform rendering.
 - Track and disc numbers are now shown as a compact "Track _n_ of _n_" row in
