@@ -304,10 +304,11 @@ button[aria-pressed="true"] {
   display: flex;
 }
 
-/* Keep the reorderable header at its full column width inside the flex vp
-   instead of shrinking to fit. */
+/* Let the reorderable header fill the viewport when it's wider than the columns
+   (so the last column can stretch to the edge), but never shrink below its full
+   column width — `minWidth: totalWidth` (inline) keeps horizontal scroll intact. */
 .grid-header-vp > .grid-header {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
 }
 
 .grid-header {
@@ -436,6 +437,11 @@ button[aria-pressed="true"] {
 .grid-header .cell:last-child,
 .grid-row .cell:last-child {
   border-right: none;
+  /* Stretch the last column to fill any space left between the columns and the
+     sidebar (its set width acts as a minimum; it grows to absorb the rest).
+     When the columns overflow the viewport instead, there's nothing extra to
+     absorb, so the set width stands and the grid scrolls horizontally. */
+  flex: 1 1 auto;
 }
 
 /* ---------- sortable / resizable column headers ---------- */
