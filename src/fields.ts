@@ -25,18 +25,26 @@ export const TAG_EDITOR_FIELDS: FieldDef[] = [
   { key: "comment", label: "Comment", multiline: true },
 ];
 
+/** A grid column may show an editable tag field or the (read-only) filename. */
+export type ColumnKey = EditableField | "filename";
+
 export interface ColumnDef {
-  key: EditableField;
+  key: ColumnKey;
   label: string;
   width: number;
+  /** Right-align + numeric sort (track/year). */
+  numeric?: boolean;
+  /** False for read-only columns (the filename); defaults to editable. */
+  editable?: boolean;
 }
 
-/** Columns shown in the file grid (in display order). */
+/** Columns shown in the file grid (in display order). File is leftmost. */
 export const GRID_COLUMNS: ColumnDef[] = [
-  { key: "title", label: "Title", width: 240 },
+  { key: "filename", label: "File", width: 240, editable: false },
+  { key: "title", label: "Title", width: 220 },
   { key: "artist", label: "Artist", width: 180 },
   { key: "album", label: "Album", width: 200 },
-  { key: "track", label: "#", width: 56 },
-  { key: "year", label: "Year", width: 70 },
+  { key: "track", label: "#", width: 56, numeric: true },
+  { key: "year", label: "Year", width: 70, numeric: true },
   { key: "genre", label: "Genre", width: 140 },
 ];

@@ -2,15 +2,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Music } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./App.css";
-import { loadSession, pickFiles, pickFolder, saveSession, saveTracks, scanPaths } from "./api";
+import {
+  getCoverArt,
+  loadSession,
+  pickFiles,
+  pickFolder,
+  saveSession,
+  saveTracks,
+  scanPaths,
+} from "./api";
 import { AdditionalTags } from "./components/AdditionalTags";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
-import { FileGrid } from "./components/FileGrid";
+import { FileGrid, type SortState } from "./components/FileGrid";
 import { FindReplace, type FindReplaceOptions } from "./components/FindReplace";
 import { StatusBar } from "./components/StatusBar";
 import { TagEditor } from "./components/TagEditor";
 import { Toolbar } from "./components/Toolbar";
-import { EDITABLE_FIELDS, type EditableField, type Row, type Track } from "./types";
+import type { ColumnKey } from "./fields";
+import { EDITABLE_FIELDS, type CoverArt, type EditableField, type Row, type Track } from "./types";
 
 /** Fields validated as numeric (UI-side). Excluded from "all text fields" replace. */
 const NUMERIC_FIELDS = new Set<EditableField>([
@@ -26,6 +35,8 @@ function toRow(track: Track): Row {
 }
 
 function isModified(row: Row, original: Track): boolean {
+  if (row.art) return true; // pending cover art to write
+  if (row.has_art !== original.has_art) return true;
   return EDITABLE_FIELDS.some((f) => (row[f] ?? "") !== (original[f] ?? ""));
 }
 
@@ -56,7 +67,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
-  const [editorOpen, setEditorOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(300);
+  const [sort, setSort] = useState<SortState | null>(null);
   const [dragOver, setDragOver] = useState(false);
   // Right-click menu position + target row; the file open in the additional-tags editor.
   const [menu, setMenu] = useState<{ x: number; y: number; rowId: string } | null>(null);
@@ -70,13 +82,69 @@ export default function App() {
   // Mirror of `rows` for use inside async callbacks (avoids stale closures).
   const rowsRef = useRef<Row[]>(rows);
   rowsRef.current = rows;
+  // Mirror of `focusIndex` so global shortcuts can read it without re-binding.
+  const focusIndexRef = useRef(0);
+  focusIndexRef.current = focusIndex;
   // Anchor for shift-range selection.
   const anchor = useRef(0);
   const firstFieldRef = useRef<HTMLInputElement | null>(null);
   // Source paths (folders/files) the user has opened, for session restore.
   const sources = useRef<string[]>([]);
-  // Snapshot of editable fields from a "Copy tags" action, for "Paste tags".
-  const tagClipboard = useRef<Record<EditableField, string> | null>(null);
+  // Snapshot of editable fields (and cover art) from a "Copy tags" action.
+  const tagClipboard = useRef<{
+    fields: Record<EditableField, string>;
+    art: CoverArt | null;
+  } | null>(null);
+
+  // ----- undo / redo history -----
+  // Each entry is a past `rows` snapshot (rows are never mutated in place, so
+  // holding the array reference is a cheap, valid snapshot). History is cleared
+  // on structural changes (load/remove/save) to stay consistent with originals.
+  const undoStack = useRef<Row[][]>([]);
+  const redoStack = useRef<Row[][]>([]);
+  // Signature of the in-progress edit "session" so rapid same-field typing
+  // collapses into a single undo step (null = a discrete, always-recorded action).
+  const lastEditSig = useRef<string | null>(null);
+
+  const clearHistory = useCallback(() => {
+    undoStack.current = [];
+    redoStack.current = [];
+    lastEditSig.current = null;
+  }, []);
+
+  // Record the current rows before a mutation. Consecutive edits sharing a
+  // non-null signature coalesce so a typing burst is one undo step.
+  const recordHistory = useCallback((sig: string | null) => {
+    if (sig !== null && sig === lastEditSig.current) return;
+    lastEditSig.current = sig;
+    undoStack.current.push(rowsRef.current);
+    if (undoStack.current.length > 200) undoStack.current.shift();
+    redoStack.current = [];
+  }, []);
+
+  const undo = useCallback(() => {
+    if (undoStack.current.length === 0) {
+      setMessage("Nothing to undo");
+      return;
+    }
+    const prev = undoStack.current.pop()!;
+    redoStack.current.push(rowsRef.current);
+    lastEditSig.current = null;
+    setRows(prev);
+    setMessage("Undo");
+  }, []);
+
+  const redo = useCallback(() => {
+    if (redoStack.current.length === 0) {
+      setMessage("Nothing to redo");
+      return;
+    }
+    const next = redoStack.current.pop()!;
+    undoStack.current.push(rowsRef.current);
+    lastEditSig.current = null;
+    setRows(next);
+    setMessage("Redo");
+  }, []);
 
   const selectedRows = useMemo(() => rows.filter((r) => selected.has(r.id)), [rows, selected]);
   const modifiedCount = useMemo(() => rows.filter((r) => r.modified).length, [rows]);
@@ -95,6 +163,7 @@ export default function App() {
       additions.forEach((a) => originals.current.set(a.id, { ...a }));
       const wasEmpty = rowsRef.current.length === 0;
       const next = [...rowsRef.current, ...additions];
+      clearHistory(); // structural change — past snapshots no longer apply
       setRows(next);
       if (wasEmpty && next.length > 0) {
         setSelected(new Set([next[0].id]));
@@ -122,7 +191,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [clearHistory]);
 
   // ----- session restore (once, on startup) -----
   const didRestore = useRef(false);
@@ -169,6 +238,8 @@ export default function App() {
   // ----- editing -----
   const updateField = useCallback(
     (field: EditableField, value: string) => {
+      // Coalesce a typing burst into the same field/selection as one undo step.
+      recordHistory(`field:${field}:${[...selected].sort().join(",")}`);
       setRows((prev) =>
         prev.map((r) => {
           if (!selected.has(r.id)) return r;
@@ -179,20 +250,89 @@ export default function App() {
         }),
       );
     },
-    [selected],
+    [selected, recordHistory],
   );
 
   // Edit a single row's field (used by inline double-click editing in the grid).
-  const editCell = useCallback((id: string, field: EditableField, value: string) => {
-    setRows((prev) =>
-      prev.map((r) => {
-        if (r.id !== id) return r;
-        const updated = { ...r, [field]: value };
-        const orig = originals.current.get(r.id);
-        updated.modified = orig ? isModified(updated, orig) : true;
-        return updated;
-      }),
-    );
+  const editCell = useCallback(
+    (id: string, field: EditableField, value: string) => {
+      recordHistory(null); // a committed inline edit is a discrete step
+      setRows((prev) =>
+        prev.map((r) => {
+          if (r.id !== id) return r;
+          const updated = { ...r, [field]: value };
+          const orig = originals.current.get(r.id);
+          updated.modified = orig ? isModified(updated, orig) : true;
+          return updated;
+        }),
+      );
+    },
+    [recordHistory],
+  );
+
+  // ----- sorting -----
+  // Clicking a column sorts ascending; clicking the same column again flips to
+  // descending. Rows are reordered in place (load order isn't meaningful), so
+  // index-based selection/focus stays correct; focus follows the same row.
+  const sortBy = useCallback((key: ColumnKey) => {
+    const dir: "asc" | "desc" =
+      sort && sort.key === key && sort.dir === "asc" ? "desc" : "asc";
+    const numeric = NUMERIC_FIELDS.has(key as EditableField);
+    const focusedId = rowsRef.current[focusIndexRef.current]?.id;
+    const sorted = [...rowsRef.current].sort((a, b) => {
+      const av = (a[key] ?? "").toString();
+      const bv = (b[key] ?? "").toString();
+      // Files that have a value always sort above blanks, in both directions.
+      const aEmpty = av.trim() === "";
+      const bEmpty = bv.trim() === "";
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
+      const cmp = numeric
+        ? Number(av) - Number(bv)
+        : av.localeCompare(bv, undefined, { sensitivity: "base", numeric: true });
+      return dir === "asc" ? cmp : -cmp;
+    });
+    setRows(sorted);
+    setSort({ key, dir });
+    if (focusedId) {
+      const ni = sorted.findIndex((r) => r.id === focusedId);
+      if (ni >= 0) {
+        setFocusIndex(ni);
+        anchor.current = ni;
+      }
+    }
+  }, [sort]);
+
+  // ----- sidebar resize (drag the divider between the grid and the editor) -----
+  const startSidebarResize = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = sidebarWidth;
+      const clamp = (w: number) => Math.min(640, Math.max(200, w));
+      const onMove = (ev: PointerEvent) => {
+        // Dragging left (smaller clientX) widens the right-hand sidebar.
+        setSidebarWidth(clamp(startW - (ev.clientX - startX)));
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [sidebarWidth],
+  );
+
+  const resizeSidebarKey = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      setSidebarWidth((w) => Math.min(640, w + 16));
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      setSidebarWidth((w) => Math.max(200, w - 16));
+    }
   }, []);
 
   // ----- right-click context menu actions -----
@@ -216,50 +356,74 @@ export default function App() {
     if (ids.size === 0) return;
     const next = rowsRef.current.filter((r) => !ids.has(r.id));
     ids.forEach((id) => originals.current.delete(id));
+    clearHistory(); // structural change — past snapshots no longer apply
     setRows(next);
     setSelected(new Set());
     setFocusIndex((fi) => Math.max(0, Math.min(fi, next.length - 1)));
     setMessage(`Removed ${ids.size} file${ids.size === 1 ? "" : "s"} from the list`);
-  }, [selected]);
+  }, [selected, clearHistory]);
 
-  const copyTags = useCallback((id: string) => {
+  const copyTags = useCallback(async (id: string) => {
     const row = rowsRef.current.find((r) => r.id === id);
     if (!row) return;
-    const snap = {} as Record<EditableField, string>;
-    for (const f of EDITABLE_FIELDS) snap[f] = row[f] ?? "";
-    tagClipboard.current = snap;
+    const fields = {} as Record<EditableField, string>;
+    for (const f of EDITABLE_FIELDS) fields[f] = row[f] ?? "";
+    // Capture the cover art too so it travels with a paste.
+    let art: CoverArt | null = null;
+    if (row.has_art) {
+      try {
+        art = await getCoverArt(row.path);
+      } catch {
+        art = null;
+      }
+    }
+    tagClipboard.current = { fields, art };
     setClipboardFilled(true);
-    setMessage(`Copied tags from ${row.filename}`);
+    setMessage(`Copied tags${art ? " + cover" : ""} from ${row.filename}`);
   }, []);
 
+  // Copy tags from the currently focused row (used by the Cmd/Ctrl+C shortcut).
+  const copyFocused = useCallback(() => {
+    const row = rowsRef.current[focusIndexRef.current];
+    if (row) void copyTags(row.id);
+  }, [copyTags]);
+
   const pasteTags = useCallback(() => {
-    const snap = tagClipboard.current;
-    if (!snap) return;
+    const clip = tagClipboard.current;
+    if (!clip) return;
+    recordHistory(null);
     setRows((prev) =>
       prev.map((r) => {
         if (!selected.has(r.id)) return r;
-        const updated = { ...r, ...snap };
+        const updated = { ...r, ...clip.fields };
+        // Paste the copied cover when there is one; otherwise leave art as-is.
+        if (clip.art) {
+          updated.art = clip.art;
+          updated.has_art = true;
+        }
         const orig = originals.current.get(r.id);
         updated.modified = orig ? isModified(updated, orig) : true;
         return updated;
       }),
     );
     setMessage(`Pasted tags into ${selected.size} file${selected.size === 1 ? "" : "s"}`);
-  }, [selected]);
+  }, [selected, recordHistory]);
 
   const clearTags = useCallback(() => {
+    recordHistory(null);
     setRows((prev) =>
       prev.map((r) => {
         if (!selected.has(r.id)) return r;
         const cleared = { ...r };
         for (const f of EDITABLE_FIELDS) cleared[f] = "";
+        cleared.has_art = false; // clearing tags also drops embedded cover art
         const orig = originals.current.get(r.id);
         cleared.modified = orig ? isModified(cleared, orig) : true;
         return cleared;
       }),
     );
     setMessage(`Cleared tags on ${selected.size} file${selected.size === 1 ? "" : "s"}`);
-  }, [selected]);
+  }, [selected, recordHistory]);
 
   // After editing additional tags, re-scan that file so its row reflects disk.
   const refreshRow = useCallback(async (path: string) => {
@@ -284,6 +448,7 @@ export default function App() {
       const targetIds =
         selected.size > 0 ? selected : new Set(rowsRef.current.map((r) => r.id));
 
+      recordHistory(null);
       let changedFiles = 0;
       let totalHits = 0;
       setRows((prev) =>
@@ -318,7 +483,7 @@ export default function App() {
           : `No matches for “${find}”`,
       );
     },
-    [selected],
+    [selected, recordHistory],
   );
 
   // ----- save / revert -----
@@ -331,11 +496,14 @@ export default function App() {
       const results = await saveTracks(dirty.map((r) => ({ ...r })));
       const okPaths = new Set(results.filter((x) => x.ok).map((x) => x.path));
       const failed = results.filter((x) => !x.ok);
+      clearHistory(); // edits are now persisted; drop the undo trail
       setRows((prev) =>
         prev.map((r) => {
           if (!okPaths.has(r.id)) return r;
-          originals.current.set(r.id, { ...r });
-          return { ...r, modified: false };
+          // Art is now embedded on disk; drop the pending payload.
+          const saved = { ...r, art: null, modified: false };
+          originals.current.set(r.id, { ...saved });
+          return saved;
         }),
       );
       setMessage(
@@ -348,9 +516,10 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [clearHistory]);
 
   const revert = useCallback(() => {
+    recordHistory(null); // reverting is itself undoable
     setRows((prev) =>
       prev.map((r) => {
         if (!r.modified) return r;
@@ -359,7 +528,7 @@ export default function App() {
       }),
     );
     setMessage("Reverted unsaved changes");
-  }, []);
+  }, [recordHistory]);
 
   // ----- selection -----
   const selectSingle = useCallback((index: number) => {
@@ -396,22 +565,60 @@ export default function App() {
   }, []);
 
   const activate = useCallback(() => {
-    setEditorOpen(true);
-    // Focus after the panel has had a chance to render.
+    // Focus the first tag field (the editor is always visible now).
     requestAnimationFrame(() => firstFieldRef.current?.focus());
   }, []);
 
-  // Cmd/Ctrl+S to save anywhere in the app.
+  // Suppress the webview's native right-click menu (reload/inspect/back) app-wide.
+  // The grid's own context menu still opens via its React onContextMenu handler.
+  useEffect(() => {
+    const onCtx = (e: MouseEvent) => e.preventDefault();
+    window.addEventListener("contextmenu", onCtx);
+    return () => window.removeEventListener("contextmenu", onCtx);
+  }, []);
+
+  // Global keyboard shortcuts. `additionalForRef` lets us bail when the
+  // additional-tags modal owns the keyboard.
+  const additionalForRef = useRef(additionalFor);
+  additionalForRef.current = additionalFor;
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      const k = e.key.toLowerCase();
+
+      if (k === "s") {
         e.preventDefault();
         void save();
+        return;
+      }
+
+      // Don't steal shortcuts while a text field or the modal has focus.
+      const ae = document.activeElement as HTMLElement | null;
+      const inField =
+        !!ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable);
+      if (inField || additionalForRef.current) return;
+
+      if (k === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if (k === "y") {
+        e.preventDefault();
+        redo();
+      } else if (k === "c") {
+        // Let a real text selection be copied normally.
+        if ((window.getSelection()?.toString().length ?? 0) > 0) return;
+        e.preventDefault();
+        copyFocused();
+      } else if (k === "v") {
+        e.preventDefault();
+        pasteTags();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [save]);
+  }, [save, undo, redo, copyFocused, pasteTags]);
 
   const empty = rows.length === 0;
   const currentFile = rows[focusIndex]?.filename;
@@ -434,7 +641,7 @@ export default function App() {
         label: "Copy tags",
         separatorBefore: true,
         disabled: !targetRow,
-        onSelect: () => copyTags(menu.rowId),
+        onSelect: () => void copyTags(menu.rowId),
       },
       {
         label: `Paste tags${selCount > 1 ? ` (${selCount})` : ""}`,
@@ -513,6 +720,7 @@ export default function App() {
                 rows={rows}
                 selected={selected}
                 focusIndex={focusIndex}
+                sort={sort}
                 onSelectSingle={selectSingle}
                 onToggle={toggle}
                 onRange={range}
@@ -520,15 +728,31 @@ export default function App() {
                 onSelectAll={selectAll}
                 onActivate={activate}
                 onCellCommit={editCell}
+                onSort={sortBy}
                 onContextMenu={openMenu}
               />
             </section>
+            {/* A focusable window-splitter: drag or use arrow keys to resize.
+                jsx-a11y doesn't recognise the separator-splitter pattern. */}
+            {/* eslint-disable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
+            <div
+              className="sidebar-resizer"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize tag editor"
+              aria-valuenow={sidebarWidth}
+              aria-valuemin={200}
+              aria-valuemax={640}
+              tabIndex={0}
+              onPointerDown={startSidebarResize}
+              onKeyDown={resizeSidebarKey}
+            />
+            {/* eslint-enable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
             <TagEditor
               selectedRows={selectedRows}
               onFieldChange={updateField}
               firstFieldRef={firstFieldRef}
-              open={editorOpen}
-              onToggle={() => setEditorOpen((v) => !v)}
+              width={sidebarWidth}
             />
           </>
         )}
@@ -548,7 +772,6 @@ export default function App() {
       {additionalFor && (
         <AdditionalTags
           path={additionalFor.path}
-          filename={additionalFor.filename}
           onClose={() => setAdditionalFor(null)}
           onSaved={(p) => void refreshRow(p)}
         />

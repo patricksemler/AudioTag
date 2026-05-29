@@ -6,8 +6,9 @@
 
 use base64::Engine;
 use lofty::config::WriteOptions;
+use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::prelude::*;
-use lofty::tag::{ItemKey, ItemValue, Tag, TagItem};
+use lofty::tag::{ItemKey, ItemValue, Tag, TagItem, TagType};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use walkdir::WalkDir;
@@ -46,6 +47,12 @@ pub struct Track {
     pub has_art: bool,
     /// Populated when the file could not be read.
     pub error: Option<String>,
+
+    /// Pending cover art to embed on save (write-only; never set by a scan).
+    /// When present it replaces existing pictures; when absent, `has_art =
+    /// false` strips art and `has_art = true` leaves existing art untouched.
+    #[serde(default)]
+    pub art: Option<CoverArt>,
 }
 
 impl Track {
@@ -68,6 +75,7 @@ impl Track {
             composer: None,
             has_art: false,
             error: Some(error),
+            art: None,
         }
     }
 }
@@ -80,8 +88,9 @@ pub struct SaveResult {
     pub error: Option<String>,
 }
 
-/// Base64-encoded cover art for display in the tag editor panel.
-#[derive(Debug, Clone, Serialize)]
+/// Base64-encoded cover art, used both to display art in the editor and to
+/// carry pasted art back to `save_tracks` for embedding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoverArt {
     pub mime: String,
     pub base64: String,
@@ -169,6 +178,7 @@ fn read_track(path: &Path) -> Track {
         composer: None,
         has_art: false,
         error: None,
+        art: None,
     };
 
     let tag = match tagged.primary_tag().or_else(|| tagged.first_tag()) {
@@ -229,6 +239,27 @@ fn write_track(t: &Track) -> Result<(), String> {
     apply_item(&mut tag, ItemKey::Genre, &t.genre);
     apply_item(&mut tag, ItemKey::Comment, &t.comment);
     apply_item(&mut tag, ItemKey::Composer, &t.composer);
+
+    // Cover art:
+    // - `art` present  → replace any existing pictures with it (e.g. paste).
+    // - no `art`, `has_art == false` → strip art (e.g. "Clear tags").
+    // - no `art`, `has_art == true`  → leave existing pictures untouched.
+    if let Some(art) = &t.art {
+        while !tag.pictures().is_empty() {
+            tag.remove_picture(0);
+        }
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&art.base64) {
+            let picture = Picture::unchecked(bytes)
+                .pic_type(PictureType::CoverFront)
+                .mime_type(MimeType::from_str(&art.mime))
+                .build();
+            tag.push_picture(picture);
+        }
+    } else if !t.has_art {
+        while !tag.pictures().is_empty() {
+            tag.remove_picture(0);
+        }
+    }
 
     tag.save_to_path(path, WriteOptions::default())
         .map_err(|e| e.to_string())
@@ -297,9 +328,20 @@ pub fn get_cover_art(path: String) -> Option<CoverArt> {
     Some(CoverArt { mime, base64 })
 }
 
-/// Read every text/locator tag item from a file, keyed by its format-native
-/// name (e.g. "TITLE", "MUSICBRAINZ_ARTISTID"). Binary items (cover art etc.)
-/// are skipped. This backs the "additional tags" editor.
+/// Produce a human-readable key name for a tag item. We prefer the canonical
+/// Vorbis-comment naming (TITLE, TRACKNUMBER, COMPOSER…) because it's readable
+/// across formats, falling back to the file's own native name (e.g. an ID3v2
+/// frame id) only for keys Vorbis can't express. `save_all_tags` resolves both.
+fn display_key(key: ItemKey, native: TagType) -> Option<String> {
+    key.map_key(TagType::VorbisComments)
+        .or_else(|| key.map_key(native))
+        .map(|s| s.to_string())
+}
+
+/// Read every text/locator tag item from a file, keyed by a readable canonical
+/// name (e.g. "TITLE", "COMPOSER", "MUSICBRAINZ_ARTISTID") rather than the raw
+/// format-native frame id. Binary items (cover art etc.) are skipped. This
+/// backs the "additional tags" editor.
 #[tauri::command]
 pub fn read_all_tags(path: String) -> Result<AllTags, String> {
     let p = Path::new(&path);
@@ -315,17 +357,14 @@ pub fn read_all_tags(path: String) -> Result<AllTags, String> {
     let tt = tag.tag_type();
     let mut items = Vec::new();
     for item in tag.items() {
-        let Some(key) = item.key().map_key(tt) else {
-            continue; // no format-native name → not editable here
-        };
         let value = match item.value() {
             ItemValue::Text(t) | ItemValue::Locator(t) => t.clone(),
             ItemValue::Binary(_) => continue,
         };
-        items.push(TagItemDto {
-            key: key.to_string(),
-            value,
-        });
+        let Some(key) = display_key(item.key(), tt) else {
+            continue; // no readable name → not editable here
+        };
+        items.push(TagItemDto { key, value });
     }
 
     Ok(AllTags {
@@ -367,7 +406,11 @@ pub fn save_all_tags(path: String, items: Vec<TagItemDto>) -> Result<SaveAllResu
         if value.is_empty() {
             continue;
         }
-        match ItemKey::from_key(tag_type, &dto.key) {
+        // Accept both the file's native key names and the canonical Vorbis
+        // names we display (so e.g. "COMPOSER" round-trips into an ID3v2 TCOM).
+        let key = ItemKey::from_key(tag_type, &dto.key)
+            .or_else(|| ItemKey::from_key(TagType::VorbisComments, &dto.key));
+        match key {
             Some(key) => tag.push_unchecked(TagItem::new(key, ItemValue::Text(value.to_string()))),
             None => skipped.push(dto.key),
         }
@@ -457,6 +500,7 @@ mod tests {
             composer: Some("A Composer".into()),
             has_art: false,
             error: None,
+            art: None,
         };
 
         write_track(&edited).expect("write should succeed");

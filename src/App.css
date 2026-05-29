@@ -47,6 +47,14 @@ body,
   height: 100%;
 }
 
+/* Lock the document: the app manages its own scroll regions, so the page
+   itself must never scroll or rubber-band when panning on a touchpad. */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 .app {
   display: flex;
   flex-direction: column;
@@ -59,6 +67,16 @@ body,
   outline: 2px solid var(--row-focus);
   outline-offset: 1px;
   border-radius: 3px;
+}
+
+/* Text fields draw their focus ring *inside* their own box (matching the
+   field's border radius) so it never clips against a scrolling container. */
+.field input:focus-visible,
+.field textarea:focus-visible,
+.tag-row input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 6px;
 }
 
 button,
@@ -222,37 +240,68 @@ button[aria-pressed="true"] {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Clip the (wider-than-panel) header so it can't bleed over the sidebar; the
+     body scrolls horizontally and the header is kept in sync programmatically.
+     This is what lets the grid actually shrink/grow with the sidebar. */
+  overflow: hidden;
+}
+
+/* Clipping viewport for the header. It's the panel width and hides overflow; the
+   inner .grid-header is as wide as the columns and is scrolled programmatically
+   (via headerRef.scrollLeft) to track the body's horizontal scroll position. */
+.grid-header-vp {
+  flex: 0 0 auto;
+  overflow: hidden;
 }
 
 .grid-header {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   height: 28px;
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
   color: var(--text-dim);
-  overflow: hidden;
 }
 
 .grid-scroll {
   flex: 1 1 auto;
   overflow: auto;
+  /* `none` (not just `contain`) so the scroller has no elastic rubber-band of its
+     own. Otherwise a fast horizontal flick overscrolls the body elastically while
+     the programmatically-synced header (clamped to its scroll range) can't follow,
+     making the header visibly "bounce" out of alignment with the columns. */
+  overscroll-behavior: none;
   background: var(--bg-panel);
 }
 
+/* The grid is a single tab-stop (aria-activedescendant), but a 2px ring around
+   the whole list is visually heavy. Show focus on the active row instead. */
 .grid-scroll:focus-visible {
-  outline: 2px solid var(--row-focus);
-  outline-offset: -2px;
+  outline: none;
+}
+
+.grid-scroll:focus-visible .grid-row.is-focused {
+  box-shadow: inset 0 0 0 2px var(--row-focus);
 }
 
 .grid-row {
   display: flex;
-  align-items: center;
+  /* Stretch cells to the full row height so their right-borders form
+     continuous column dividers, even for empty cells. */
+  align-items: stretch;
   border-bottom: 1px solid var(--border);
   cursor: default;
   user-select: none;
   white-space: nowrap;
+}
+
+/* Vertically centre cell text within the now full-height cell. Using line-height
+   (rather than flex) keeps `text-overflow: ellipsis` working — an anonymous flex
+   item won't truncate, but a block box with overflow hidden does. Row content
+   height is 29px (30px row − 1px bottom border, box-sizing: border-box). */
+.grid-row .cell {
+  line-height: 29px;
 }
 
 .grid-row.is-selected {
@@ -275,15 +324,17 @@ button[aria-pressed="true"] {
   flex: 0 0 auto;
 }
 
-.cell-status {
-  width: 28px;
+/* Inline row status indicator (unsaved dot / error icon), shown at the start of
+   the File cell instead of in a separate gutter column. */
+.row-status {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  vertical-align: middle;
+  margin-right: 5px;
   color: var(--modified);
 }
 
-.grid-row.is-error .cell-status {
+.grid-row.is-error .row-status {
   color: var(--error);
 }
 
@@ -292,43 +343,180 @@ button[aria-pressed="true"] {
   font-variant-numeric: tabular-nums;
 }
 
-/* Inline cell editing (double-click). */
+/* Vertical dividers between columns, running the full height of the list so it's
+   easy to see where each column begins and ends. */
+.grid-header .cell,
+.grid-row .cell {
+  border-right: 1px solid var(--border);
+}
+
+.grid-header .cell:last-child,
+.grid-row .cell:last-child {
+  border-right: none;
+}
+
+/* ---------- sortable / resizable column headers ---------- */
+.cell-head {
+  position: relative;
+  overflow: visible;
+  padding: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+/* While reordering, a plain empty placeholder of the dragged column's width
+   opens up where it will drop, so the other columns shift live to make room. */
+.cell-head-gap,
+.cell-gap {
+  background: transparent;
+  border-right: none;
+}
+
+/* Floating full-height copy of the dragged column (header + data cells) that
+   tracks the cursor while reordering. */
+.col-drag-ghost {
+  position: fixed;
+  z-index: 100;
+  pointer-events: none;
+  overflow: hidden;
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 40%);
+  color: var(--text);
+  opacity: 0.97;
+}
+
+.col-drag-ghost-head {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.col-drag-ghost-body {
+  position: absolute;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+}
+
+.col-drag-ghost-cell {
+  position: absolute;
+  left: 0;
+  right: 0;
+  padding: 0 8px;
+  line-height: 29px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--border);
+}
+
+.col-drag-ghost.cell-num .col-drag-ghost-head {
+  justify-content: flex-end;
+}
+
+.col-drag-ghost.cell-num .col-drag-ghost-cell {
+  text-align: right;
+}
+
+/* The header label doubles as the sort button (click to sort, click again to
+   reverse). It resets the global button chrome to look like a plain header. */
+.col-sort {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  font-weight: 600;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.cell-head.cell-num .col-sort {
+  justify-content: flex-end;
+}
+
+.col-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A thin grip straddling the column's right edge to drag-resize the column. */
+.col-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+/* Inline cell editing (single-click). The input itself is transparent and
+   inherits the cell's font/colour (so the text stays in place), while the cell
+   box gets a blue outline + drop shadow to clearly mark what's being edited. */
 .cell.is-editing {
-  padding: 0 2px;
+  /* Keep the normal cell padding so the edited text sits exactly where the
+     rendered text did (no horizontal jump when editing starts). */
+  padding: 0 8px;
+  background: var(--bg-panel);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  /* Lift the edited cell above neighbouring rows so the shadow isn't painted
+     over by the next absolutely-positioned row. */
+  position: relative;
+  z-index: 2;
 }
 
 .cell-edit {
   width: 100%;
-  height: 24px;
-  padding: 0 6px;
-  background: var(--bg);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   outline: none;
+  color: inherit;
+  font: inherit;
 }
 
 .cell-num .cell-edit {
   text-align: right;
 }
 
+/* ---------- sidebar resizer ---------- */
+/* Draggable divider between the file grid and the tag editor. */
+.sidebar-resizer {
+  flex: 0 0 6px;
+  align-self: stretch;
+  background: var(--border);
+  cursor: col-resize;
+  touch-action: none;
+}
+
 /* ---------- tag editor ---------- */
+/* Width is set inline from the resizable sidebar state. */
 .tag-editor {
-  flex: 0 0 300px;
-  width: 300px;
-  border-left: 1px solid var(--border);
+  flex: 0 0 auto;
   background: var(--bg-panel);
   padding: 12px;
   overflow-y: auto;
-}
-
-.tag-editor.is-collapsed {
-  flex: 0 0 40px;
-  width: 40px;
-  padding: 8px 0;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 .panel-head {
@@ -401,7 +589,13 @@ button[aria-pressed="true"] {
   gap: 3px;
 }
 
-.field label {
+.field-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.multi-hint {
+  margin: 0 0 10px;
   font-size: 12px;
   color: var(--text-dim);
 }
@@ -604,7 +798,8 @@ button[aria-pressed="true"] {
   flex-direction: column;
   gap: 6px;
   overflow-y: auto;
-  padding-right: 2px;
+  overscroll-behavior: contain;
+  padding: 2px;
 }
 
 .tag-row {
