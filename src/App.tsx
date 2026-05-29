@@ -23,7 +23,7 @@ import { TagEditor } from "./components/TagEditor";
 import { Toolbar } from "./components/Toolbar";
 import type { ColumnKey } from "./fields";
 import { EDITABLE_FIELDS, type CoverArt, type EditableField, type Row, type Track } from "./types";
-import { compileFind, isModified, replaceAllCount } from "./edits";
+import { compileFind, isModified, reconcileModified, replaceAllCount } from "./edits";
 
 /** Fields validated as numeric (UI-side). Excluded from "all text fields" replace. */
 const NUMERIC_FIELDS = new Set<EditableField>([
@@ -40,7 +40,7 @@ function toRow(track: Track): Row {
 
 /**
  * Use the streaming scan (rows paint as they load) vs the blocking `scan_paths`.
- * A flag so we can fall back instantly if streaming ever misbehaves. PLAN.md §5.3.
+ * A flag so we can fall back instantly if streaming ever misbehaves.
  */
 const USE_STREAMING = true;
 
@@ -48,7 +48,7 @@ export default function App() {
   const [rows, setRows] = useState<Row[]>([]);
   // Ids of rows with unsaved edits, kept in sync with `rows` through the single
   // `commitRows` entry point below. Lets `modifiedCount` be O(1) (`.size`)
-  // instead of an O(total) scan on every render. PLAN.md §7.
+  // instead of an O(total) scan on every render.
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusIndex, setFocusIndex] = useState(0);
@@ -80,7 +80,7 @@ export default function App() {
   // The single place `rows` is replaced. Recomputes `dirtyIds` from the new
   // array in the same pass, so the dirty set can never drift from `row.modified`
   // (the per-row source of truth the grid renders). Every mutation routes
-  // through this. PLAN.md §7.
+  // through this.
   const commitRows = useCallback((next: Row[]) => {
     setRows(next);
     setDirtyIds(new Set(next.filter((r) => r.modified).map((r) => r.id)));
@@ -102,7 +102,12 @@ export default function App() {
   // ----- undo / redo history -----
   // Each entry is a past `rows` snapshot (rows are never mutated in place, so
   // holding the array reference is a cheap, valid snapshot). History is cleared
-  // on structural changes (load/remove/save) to stay consistent with originals.
+  // on structural changes (load/remove) that invalidate the snapshots, but *not*
+  // on save: a save only advances the on-disk baseline, so the snapshots stay
+  // valid and undo can cross the save boundary. The catch is that a snapshot's
+  // baked-in `modified` flags reflect the baseline at capture time — so on
+  // restore we run `reconcileModified` to recompute them against the *current*
+  // baseline (undoing a saved edit thus re-marks the row dirty for re-saving).
   const undoStack = useRef<Row[][]>([]);
   const redoStack = useRef<Row[][]>([]);
   // Signature of the in-progress edit "session" so rapid same-field typing
@@ -133,7 +138,7 @@ export default function App() {
     const prev = undoStack.current.pop()!;
     redoStack.current.push(rowsRef.current);
     lastEditSig.current = null;
-    commitRows(prev);
+    commitRows(reconcileModified(prev, originals.current));
     setMessage("Undo");
   }, [commitRows]);
 
@@ -145,7 +150,7 @@ export default function App() {
     const next = redoStack.current.pop()!;
     undoStack.current.push(rowsRef.current);
     lastEditSig.current = null;
-    commitRows(next);
+    commitRows(reconcileModified(next, originals.current));
     setMessage("Redo");
   }, [commitRows]);
 
@@ -158,7 +163,7 @@ export default function App() {
   }, [rows]);
 
   // O(selection): look the selected ids up in the index instead of filtering all
-  // rows. Stable identity when neither selection nor rows changed. PLAN.md §7.
+  // rows. Stable identity when neither selection nor rows changed.
   const selectedRows = useMemo(() => {
     const out: Row[] = [];
     for (const id of selected) {
@@ -183,7 +188,7 @@ export default function App() {
       // accumulator (not rowsRef, which only updates on render) is the source of
       // truth while batches stream in, so batches arriving faster than React can
       // re-render never drop rows. Selection is set only on the first batch when
-      // the list started empty, so streaming never steals focus (PLAN.md §12).
+      // the list started empty, so streaming never steals focus
       const known = new Set(rowsRef.current.map((r) => r.id));
       const wasEmpty = rowsRef.current.length === 0;
       let acc = rowsRef.current;
@@ -632,7 +637,10 @@ export default function App() {
         }
       }
 
-      clearHistory(); // edits are now persisted; drop the undo trail
+      // Keep the undo trail so edits can be undone after saving (restoring a
+      // snapshot re-marks rows dirty against the new baseline — see `undo`). Only
+      // break edit-coalescing so a fresh edit after the save records its own step.
+      lastEditSig.current = null;
       commitRows(
         rowsRef.current.map((r) => {
           if (!okPaths.has(r.id)) return r;
@@ -655,7 +663,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [clearHistory, commitRows]);
+  }, [commitRows]);
 
   const revert = useCallback(() => {
     recordHistory(null); // reverting is itself undoable

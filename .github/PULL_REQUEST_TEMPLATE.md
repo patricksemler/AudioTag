@@ -12,8 +12,8 @@
 - [ ] `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` pass
 - [ ] **CHANGELOG.md** updated under `[Unreleased]` (or `[skip changelog]` in the title)
 - [ ] **README / CLAUDE.md / ADR** updated if capabilities, commands, or decisions changed
-- [ ] **Accessibility** checked for any UI change (keyboard + screen reader; PLAN.md §12)
-- [ ] **Data safety** preserved (no tag-write regression; PLAN.md §13)
+- [ ] **Accessibility** checked for any UI change (keyboard + screen reader)
+- [ ] **Data safety** preserved (no tag-write regression)
 
 ## Performance (required for perf PRs)
 

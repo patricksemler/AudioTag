@@ -31,7 +31,7 @@ export function TagEditor({
 
   // All fields' mixed/shared values in a single pass over the selection
   // (was 12 separate O(selection) scans per render). Memoized on `selectedRows`,
-  // whose identity is now stable when the selection is unchanged. PLAN.md §9.
+  // whose identity is now stable when the selection is unchanged.
   const mixedValues = useMemo(
     () => computeMixedValues(selectedRows, EDITABLE_FIELDS),
     [selectedRows],

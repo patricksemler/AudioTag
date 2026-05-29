@@ -4,7 +4,7 @@
 #
 # The corpora are deliberately *format-diverse* and (for one corpus)
 # *art-bearing*, because the previous WAV-only set hid the real per-file parse
-# cost (WAV tags are trivial and carry no embedded art). See PLAN.md §4.2.
+# cost (WAV tags are trivial and carry no embedded art).
 #
 # Strategy: build one fully-tagged "template" file per format with ffmpeg, then
 # replicate templates by copying them into a nested directory tree with unique

@@ -1,8 +1,8 @@
 # AudioTag benchmark harness
 
-This directory holds the performance-measurement harness that gates the
-optimization work in [`PLAN.md`](../PLAN.md). **Every perf change is measured
-against the baseline captured here before it lands.**
+This directory holds the performance-measurement harness for the optimization
+work. **Every perf change is measured against the baseline captured here before
+it lands.**
 
 ## What's here
 
@@ -17,7 +17,7 @@ against the baseline captured here before it lands.**
 
 The corpora live under `bench-data/` (git-ignored). They are **format-diverse**
 and one is **art-bearing** — the old WAV-only set hid the real per-file parse
-cost (see PLAN.md §4.2). Requires `ffmpeg`.
+cost. Requires `ffmpeg`.
 
 ```bash
 scripts/gen-corpus.sh                 # everything except large + art-heavy
