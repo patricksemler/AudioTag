@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { useEffect, useState } from "react";
 import { getCoverArt } from "../api";
 import { TAG_EDITOR_FIELDS, type FieldDef } from "../fields";
 import type { EditableField, Row } from "../types";
@@ -8,8 +7,8 @@ interface TagEditorProps {
   selectedRows: Row[];
   onFieldChange: (field: EditableField, value: string) => void;
   firstFieldRef: React.RefObject<HTMLInputElement | null>;
-  open: boolean;
-  onToggle: () => void;
+  /** Current sidebar width in px (set by the draggable divider). */
+  width: number;
 }
 
 /** Numeric "total" fields rendered inline beside their base (Track of …, Disc of …). */
@@ -33,33 +32,47 @@ export function TagEditor({
   selectedRows,
   onFieldChange,
   firstFieldRef,
-  open,
-  onToggle,
+  width,
 }: TagEditorProps) {
   const count = selectedRows.length;
   const [art, setArt] = useState<string | null>(null);
   const [artLoading, setArtLoading] = useState(false);
-  const lastArtPath = useRef<string | null>(null);
 
-  // Lazily load cover art when exactly one file is selected and the panel is open.
+  // The single selected file's cover-relevant fields. Depending on these
+  // primitives (rather than the `selectedRows` array, whose identity churns on
+  // every unrelated edit) keeps the effect from re-running spuriously — which
+  // previously left the preview stuck on "Loading…" when a fetch was cancelled.
+  const single = count === 1 ? selectedRows[0] : null;
+  const path = single?.path ?? null;
+  const hasArt = single?.has_art ?? false;
+  const pendingArt = single?.art ?? null;
+
   useEffect(() => {
-    if (!open || count !== 1) {
+    // No single selection, or a pending pasted cover that takes precedence over
+    // what's on disk, or a file known to have no art — all resolve synchronously.
+    if (!path) {
       setArt(null);
-      lastArtPath.current = null;
+      setArtLoading(false);
       return;
     }
-    const row = selectedRows[0];
-    if (row.path === lastArtPath.current) return;
-    lastArtPath.current = row.path;
-    if (!row.has_art) {
+    if (pendingArt) {
+      setArt(`data:${pendingArt.mime};base64,${pendingArt.base64}`);
+      setArtLoading(false);
+      return;
+    }
+    if (!hasArt) {
       setArt(null);
+      setArtLoading(false);
       return;
     }
     let cancelled = false;
     setArtLoading(true);
-    getCoverArt(row.path)
+    getCoverArt(path)
       .then((c) => {
         if (!cancelled) setArt(c ? `data:${c.mime};base64,${c.base64}` : null);
+      })
+      .catch(() => {
+        if (!cancelled) setArt(null);
       })
       .finally(() => {
         if (!cancelled) setArtLoading(false);
@@ -67,25 +80,7 @@ export function TagEditor({
     return () => {
       cancelled = true;
     };
-  }, [open, count, selectedRows]);
-
-  // Collapsed: a slim rail with just an expand button.
-  if (!open) {
-    return (
-      <aside className="tag-editor is-collapsed" aria-label="Tag editor (collapsed)">
-        <button
-          type="button"
-          className="panel-toggle"
-          onClick={onToggle}
-          aria-label="Show tag editor"
-          aria-expanded={false}
-          title="Show tag editor"
-        >
-          <PanelRightOpen size={18} aria-hidden="true" />
-        </button>
-      </aside>
-    );
-  }
+  }, [path, hasArt, pendingArt]);
 
   /** Render a single labelled input for a field. */
   function renderInput(f: FieldDef, isFirst = false) {
@@ -114,39 +109,17 @@ export function TagEditor({
     );
   }
 
-  const toggleButton = (
-    <button
-      type="button"
-      className="panel-toggle"
-      onClick={onToggle}
-      aria-label="Hide tag editor"
-      aria-expanded={true}
-      title="Hide tag editor"
-    >
-      <PanelRightClose size={18} aria-hidden="true" />
-    </button>
-  );
-
   if (count === 0) {
     return (
-      <aside className="tag-editor" aria-label="Tag editor">
-        <div className="panel-head">
-          <h2 className="panel-title">Tag editor</h2>
-          {toggleButton}
-        </div>
+      <aside className="tag-editor" aria-label="Tag editor" style={{ width, flexBasis: width }}>
         <p className="empty-hint">Select a file to edit its tags.</p>
       </aside>
     );
   }
 
   return (
-    <aside className="tag-editor" aria-label="Tag editor">
-      <div className="panel-head">
-        <h2 className="panel-title">
-          {count === 1 ? selectedRows[0].filename : `${count} files selected`}
-        </h2>
-        {toggleButton}
-      </div>
+    <aside className="tag-editor" aria-label="Tag editor" style={{ width, flexBasis: width }}>
+      {count > 1 && <p className="multi-hint">Editing {count} files</p>}
 
       <div className="cover" aria-label="Cover art">
         {artLoading ? (
@@ -163,12 +136,16 @@ export function TagEditor({
           // Totals are rendered inline beside their base field; skip them here.
           if (TOTAL_FIELDS.has(f.key)) return null;
 
+          // Labels are intentionally NOT associated with their inputs (no
+          // htmlFor): a `for`-linked label focuses the input on click, which
+          // surprised users clicking the label area above a box. The inputs
+          // carry their own aria-label, so screen-reader naming is preserved.
           const totalKey = PAIRED_TOTAL[f.key];
           if (totalKey) {
             const totalDef = TAG_EDITOR_FIELDS.find((d) => d.key === totalKey)!;
             return (
               <div className="field field-pair" key={f.key}>
-                <label htmlFor={`field-${f.key}`}>{f.label}</label>
+                <span className="field-label">{f.label}</span>
                 <div className="pair-inputs">
                   {renderInput(f)}
                   <span className="pair-sep" aria-hidden="true">
@@ -180,10 +157,9 @@ export function TagEditor({
             );
           }
 
-          const fieldId = `field-${f.key}`;
           return (
             <div className="field" key={f.key}>
-              <label htmlFor={fieldId}>{f.label}</label>
+              <span className="field-label">{f.label}</span>
               {renderInput(f, i === 0)}
             </div>
           );
