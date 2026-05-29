@@ -78,9 +78,28 @@ adheres to [Semantic Versioning](https://semver.org/).
   the affected rows), selection-derived state is computed proportional to the
   selection rather than the whole list, the tag editor computes mixed values in
   a single pass, and find/replace compiles its pattern once.
+- The window now behaves like a native app instead of a web page: text can
+  only be selected inside editable fields (no more highlighting button, header,
+  or grid text, and no Ctrl/Cmd+A selecting the whole UI), and the I-beam
+  cursor only appears over text fields.
+- Suppressed browser-only gestures the webview inherited — reload, print,
+  in-engine zoom/pinch (Ctrl/Cmd with +/-/0 and Ctrl+scroll), history
+  back/forward, and HTML drag of images/elements. OS-level file drag-and-drop
+  and column reordering are unaffected.
+- Starting an inline cell edit now collapses a multi-row selection to the row
+  being edited, so an active "select all" (Ctrl/Cmd+A) highlight clears instead
+  of lingering behind the editor.
+- Opening an inline cell editor now selects the whole value, so it can be
+  overwritten immediately (click within the field to place the caret instead).
+- Pressing Enter in an inline cell editor now commits the edit and drops
+  straight into editing the same column on the next row (spreadsheet-style),
+  skipping unreadable files and stopping at the last row.
 
 ### Fixed
 
+- Committing an inline cell edit without changing the value no longer records a
+  no-op undo step, which had made the first Undo appear to do nothing (a second
+  Undo was needed to reach the actual edit).
 - Clicking a field's label in the tag editor no longer moves the cursor into
   that field; editing now starts only when the input itself is clicked.
 - Disabled the webview's native right-click menu (reload/inspect) so it no

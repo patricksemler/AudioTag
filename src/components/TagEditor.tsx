@@ -124,7 +124,7 @@ export function TagEditor({
         {artLoading ? (
           <span className="cover-state">Loading…</span>
         ) : art ? (
-          <img src={art} alt="Embedded cover art" />
+          <img src={art} alt="Embedded cover art" draggable={false} />
         ) : (
           <span className="cover-state">{count === 1 ? "No art" : "—"}</span>
         )}
