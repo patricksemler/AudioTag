@@ -424,6 +424,12 @@ button[aria-pressed="true"] {
   text-align: right;
 }
 
+/* Mirror the row-selection highlight in the floating ghost so the dragged
+   column keeps the blue background on selected rows like the rest of the grid. */
+.col-drag-ghost-cell.is-selected {
+  background: var(--row-selected);
+}
+
 /* The header label doubles as the sort button (click to sort, click again to
    reverse). It resets the global button chrome to look like a plain header. */
 .col-sort {

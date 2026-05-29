@@ -91,3 +91,5 @@ adheres to [Semantic Versioning](https://semver.org/).
   focused; keyboard focus is now shown on the active row instead.
 - The window no longer briefly flashes a blank white screen while launching;
   it stays hidden until the UI has rendered.
+- Selected rows now keep their highlight in the floating column that follows the
+  cursor while dragging a column header to reorder it.

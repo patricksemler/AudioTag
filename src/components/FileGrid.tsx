@@ -657,7 +657,7 @@ export function FileGrid(props: FileGridProps) {
             {virtualItems.map((vi) => (
               <div
                 key={rows[vi.index].id}
-                className="col-drag-ghost-cell"
+                className={`col-drag-ghost-cell${selected.has(rows[vi.index].id) ? " is-selected" : ""}`}
                 style={{ top: vi.start - ghost!.scrollTop, height: ROW_HEIGHT }}
               >
                 {rows[vi.index][GRID_COLUMNS[draggedCol].key] ?? ""}
