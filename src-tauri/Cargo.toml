@@ -27,6 +27,9 @@ serde_json = "1"
 lofty = "0.24"
 walkdir = "2"
 base64 = "0.22"
+# Only the decoders for image formats actually embedded as cover art, plus the
+# PNG encoder we emit thumbnails as. Keeps compile time and binary size down.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
 
 [dev-dependencies]
 criterion = "0.5"

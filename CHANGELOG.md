@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A fixed cover-art preview column at the left of the file grid. Thumbnails are
+  downscaled in the backend and fetched lazily (only for on-screen rows, batched
+  and cached) so the column stays cheap even for very large libraries.
 - Initial v0: Tauri 2 + React/TypeScript app skeleton.
 - Open folders (recursive) and individual audio files via native dialogs.
 - Accessible, virtualized file grid with keyboard navigation and multi-select.
@@ -52,6 +55,17 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The file grid is now denser — slightly shorter rows and smaller text — to fit
+  more files on screen.
+- The grid now fills any leftover space between the last column and the tag
+  editor, so there's no empty gap — and resizing the sidebar no longer shrinks
+  or truncates the last column.
+- Dragging files or folders over the window now outlines the drop target (the
+  file grid, or the whole workspace when empty) with a dashed accent border
+  instead of dimming the whole app behind a centered card.
+- The grid and tag editor are now separated by a thin 1px divider (matching the
+  grid's column lines) instead of a chunky grey handle; you just drag the edge
+  to resize.
 - Replaced emoji UI glyphs with [lucide](https://lucide.dev) icons for
   consistent cross-platform rendering.
 - Track and disc numbers are now shown as a compact "Track _n_ of _n_" row in

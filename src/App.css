@@ -265,12 +265,19 @@ button[aria-pressed="true"] {
   flex: 1 1 auto;
   display: flex;
   min-height: 0;
+  position: relative;
 }
 
 .files-panel {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
+  position: relative;
+  /* Divider against the sidebar, matching the grid's row/column dividers. Placed
+     on the grid's right edge (not the sidebar's left) so the rows/columns butt
+     right up to it — the invisible resize handle sits on the far side and blends
+     into the sidebar. */
+  border-right: 1px solid var(--border);
 }
 
 /* ---------- file grid ---------- */
@@ -279,6 +286,13 @@ button[aria-pressed="true"] {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Slightly smaller than the app default (14px) for a denser, more native
+     file list. */
+  font-size: 13px;
+  /* Header sits flush on the list so the column dividers run unbroken from the
+     header through every row (a gap here splits those lines and misaligns the
+     column-drag ghost). `relative` anchors the drag-over border overlay. */
+  position: relative;
   /* Clip the (wider-than-panel) header so it can't bleed over the sidebar; the
      body scrolls horizontally and the header is kept in sync programmatically.
      This is what lets the grid actually shrink/grow with the sidebar. */
@@ -291,12 +305,21 @@ button[aria-pressed="true"] {
 .grid-header-vp {
   flex: 0 0 auto;
   overflow: hidden;
+  /* Lay the fixed cover header beside the (scrollable) reorderable header. */
+  display: flex;
+}
+
+/* Let the reorderable header fill the viewport when it's wider than the columns
+   (so the last column can stretch to the edge), but never shrink below its full
+   column width — `minWidth: totalWidth` (inline) keeps horizontal scroll intact. */
+.grid-header-vp > .grid-header {
+  flex: 1 1 auto;
 }
 
 .grid-header {
   display: flex;
   align-items: stretch;
-  height: 28px;
+  height: 24px;
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
@@ -320,10 +343,6 @@ button[aria-pressed="true"] {
   outline: none;
 }
 
-.grid-scroll:focus-visible .grid-row.is-focused {
-  box-shadow: inset 0 0 0 2px var(--row-focus);
-}
-
 .grid-row {
   display: flex;
   /* Stretch cells to the full row height so their right-borders form
@@ -338,18 +357,17 @@ button[aria-pressed="true"] {
 /* Vertically centre cell text within the now full-height cell. Using line-height
    (rather than flex) keeps `text-overflow: ellipsis` working — an anonymous flex
    item won't truncate, but a block box with overflow hidden does. Row content
-   height is 29px (30px row − 1px bottom border, box-sizing: border-box). */
+   height is 25px (26px row − 1px bottom border, box-sizing: border-box). */
 .grid-row .cell {
-  line-height: 29px;
+  line-height: 25px;
 }
 
 .grid-row.is-selected {
   background: var(--row-selected);
 }
 
-.grid-row.is-focused {
-  box-shadow: inset 2px 0 0 var(--row-focus);
-}
+/* No separate focus bar: keyboard navigation moves the selection with the
+   focus, so the selected-row highlight already marks the active row. */
 
 .grid-row.is-error {
   color: var(--error);
@@ -382,6 +400,38 @@ button[aria-pressed="true"] {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------- fixed cover-art column ---------- */
+/* Width must match THUMB_COL_W in FileGrid.tsx (the grid sizer reserves it). */
+.cell-thumb,
+.cell-head-thumb {
+  flex: 0 0 40px;
+  width: 40px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* The header cell lives outside .grid-header, so it misses the shared
+   column-divider rule and header background — match both so it reads as part of
+   the header row rather than a black gap. */
+.cell-head-thumb {
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.thumb-img {
+  width: 20px;
+  height: 20px;
+  object-fit: cover;
+  border-radius: 3px;
+  display: block;
+  /* A hairline frame so light covers stay distinct from the row background. */
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 12%);
+}
+
 /* Vertical dividers between columns, running the full height of the list so it's
    easy to see where each column begins and ends. */
 .grid-header .cell,
@@ -391,6 +441,23 @@ button[aria-pressed="true"] {
 
 .grid-header .cell:last-child,
 .grid-row .cell:last-child {
+  border-right: none;
+}
+
+/* Filler that eats the space between the last real column and the sidebar so
+   there's no empty gap — without ever resizing the column itself, so expanding
+   the sidebar can't shrink it (and truncate its text). `flex-basis: 0` makes it
+   zero-width when the columns already fill or overflow the viewport. */
+.cell-fill {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0;
+}
+
+/* The last real column sits directly before the filler; drop its divider so the
+   two read as one continuous cell (the column appears to extend to the edge). */
+.grid-header .cell:has(+ .cell-fill),
+.grid-row .cell:has(+ .cell-fill) {
   border-right: none;
 }
 
@@ -549,9 +616,19 @@ button[aria-pressed="true"] {
 .sidebar-resizer {
   flex: 0 0 6px;
   align-self: stretch;
-  background: var(--border);
+  /* No visible bar: match the panels either side so the seam disappears (a
+     transparent handle let the darker workspace show through as a bar). The
+     user just drags this (col-resize) edge to resize. */
+  background: var(--bg-panel);
   cursor: col-resize;
   touch-action: none;
+}
+
+/* Keyboard users still need to see the handle when it's focused; show a faint
+   neutral line only then (never on hover, never blue). */
+.sidebar-resizer:focus-visible {
+  outline: none;
+  background: var(--border);
 }
 
 /* ---------- tag editor ---------- */
@@ -723,26 +800,33 @@ button[aria-pressed="true"] {
   margin-top: 16px;
 }
 
-/* ---------- drag & drop overlay ---------- */
-.drop-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+/* ---------- drag & drop ---------- */
+/* While dragging files over the window, outline the drop target with a dashed
+   accent border instead of overlaying the whole app. The border is drawn on a
+   pseudo-element layered above the content (rather than an inset outline) so it
+   stays visible even over an opaque grid. We deliberately omit a background
+   fill so it doesn't discolour the grid rows / filenames.
+   - Empty state: the whole workspace is the target (no sidebar yet).
+   - With files loaded: only the file grid, so the editor sidebar stays clear. */
+.workspace.drag-over:has(.welcome)::after,
+.workspace.drag-over .grid-wrap::after {
+  content: "";
+  position: absolute;
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
   pointer-events: none;
+  z-index: 200;
 }
 
-.drop-overlay-card {
-  padding: 18px 26px;
-  border: 2px dashed var(--accent);
-  border-radius: 12px;
-  background: var(--bg-panel);
-  color: var(--text);
-  font-weight: 600;
-  box-shadow: 0 8px 30px rgb(0 0 0 / 25%);
+/* Empty state: inset within the (unpadded) workspace. */
+.workspace.drag-over:has(.welcome)::after {
+  inset: 6px;
+}
+
+/* Files loaded: frame the whole grid with a small inset. The top line sits above
+   the header text (not through it), and the overlay paints above the rows. */
+.workspace.drag-over .grid-wrap::after {
+  inset: 2px;
 }
 
 /* ---------- context menu ---------- */

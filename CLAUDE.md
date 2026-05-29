@@ -34,6 +34,8 @@ cross-compile). Run on a Mac to get the macOS build.
 - `src/` — React UI. `components/` holds Grid/TagEditor/Toolbar/StatusBar.
   `api.ts` wraps Tauri `invoke`. `types.ts` mirrors the Rust `Track` struct.
   `fields.ts` is the single source of truth for editable fields + columns.
+  `coverThumbs.ts` is the lazy/batched/cached store backing the grid's
+  cover-art thumbnail column (see `docs/adr/0009`).
 - `src-tauri/src/tags.rs` — all tag logic and the Tauri commands.
 - `src-tauri/src/lib.rs` — app setup + command registration.
 - `bench/` — performance harness: `BASELINE.md` (captured numbers),
