@@ -360,9 +360,8 @@ button[aria-pressed="true"] {
   background: var(--row-selected);
 }
 
-.grid-row.is-focused {
-  box-shadow: inset 2px 0 0 var(--row-focus);
-}
+/* No separate focus bar: keyboard navigation moves the selection with the
+   focus, so the selected-row highlight already marks the active row. */
 
 .grid-row.is-error {
   color: var(--error);
