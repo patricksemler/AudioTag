@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { compileFind, commonValue, computeMixedValues, isModified, replaceAllCount } from "./edits";
+import {
+  compileFind,
+  commonValue,
+  computeMixedValues,
+  isModified,
+  reconcileModified,
+  replaceAllCount,
+} from "./edits";
 import { EDITABLE_FIELDS, type Row, type Track } from "./types";
 
 function track(over: Partial<Track> = {}): Track {
@@ -137,5 +144,52 @@ describe("dirty-set derivation (commitRows invariant)", () => {
     back.modified = isModified(back, orig);
     expect(deriveDirty([back]).has("1")).toBe(false);
     expect(deriveDirty([back]).size).toBe(0);
+  });
+});
+
+describe("reconcileModified (undo across a save boundary)", () => {
+  it("re-marks a restored pre-save value as dirty against the new baseline", () => {
+    // User edited "Old" → "New" and saved, so the baseline is now "New".
+    const originals = new Map<string, Track>([["1", track({ title: "New" })]]);
+    // Undo restores the pre-edit snapshot, whose flag was clean against the *old*
+    // baseline. Reconciling against the saved baseline must flip it dirty.
+    const snapshot = [row({ id: "1", title: "Old", modified: false })];
+
+    const [reconciled] = reconcileModified(snapshot, originals);
+
+    expect(reconciled.modified).toBe(true);
+    expect(reconciled.title).toBe("Old");
+  });
+
+  it("marks a redo back to the saved value as clean", () => {
+    const originals = new Map<string, Track>([["1", track({ title: "New" })]]);
+    // The redo snapshot carries a stale dirty flag (true at capture time); once
+    // the value matches the saved baseline again it must read clean.
+    const snapshot = [row({ id: "1", title: "New", modified: true })];
+
+    const [reconciled] = reconcileModified(snapshot, originals);
+
+    expect(reconciled.modified).toBe(false);
+  });
+
+  it("preserves referential identity for rows whose flag does not change", () => {
+    const originals = new Map<string, Track>([
+      ["1", track({ title: "T" })],
+      ["2", track({ title: "T" })],
+    ]);
+    // Row 1 already matches the baseline and stays clean; row 2 flips dirty.
+    const clean = row({ id: "1", title: "T", modified: false });
+    const flips = row({ id: "2", title: "Edited", modified: false });
+
+    const out = reconcileModified([clean, flips], originals);
+
+    expect(out[0]).toBe(clean); // same reference → grid row won't re-render
+    expect(out[1]).not.toBe(flips); // new object so the dirty flag is visible
+    expect(out[1].modified).toBe(true);
+  });
+
+  it("treats a row with no baseline entry as modified", () => {
+    const reconciled = reconcileModified([row({ id: "gone", title: "X" })], new Map());
+    expect(reconciled[0].modified).toBe(true);
   });
 });

@@ -10,6 +10,27 @@ export function isModified(row: Row, original: Track): boolean {
   return EDITABLE_FIELDS.some((f) => (row[f] ?? "") !== (original[f] ?? ""));
 }
 
+/**
+ * Recompute every row's `modified` flag against the *current* on-disk baseline
+ * (`originals`), used when restoring an undo/redo snapshot. A snapshot captures
+ * the `modified` flags that were true at capture time, but a save in between
+ * advances the baseline — so a restored value that matched disk then may differ
+ * now (and vice versa). Recomputing here keeps the invariant "`modified` ⇔
+ * differs from disk", which is what lets undo cross a save boundary: undoing a
+ * saved edit re-marks the row dirty so it must be saved again.
+ *
+ * Referential identity is preserved for rows whose flag is unchanged, so the
+ * memoized grid only re-renders rows that actually flipped dirty/clean. Rows
+ * with no baseline entry are treated as modified (same rule as the edit paths).
+ */
+export function reconcileModified(rows: Row[], originals: Map<string, Track>): Row[] {
+  return rows.map((r) => {
+    const orig = originals.get(r.id);
+    const modified = orig ? isModified(r, orig) : true;
+    return modified === r.modified ? r : { ...r, modified };
+  });
+}
+
 export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

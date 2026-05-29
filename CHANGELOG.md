@@ -43,7 +43,9 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Downloadable macOS (universal) and Windows installers, produced by a local
   build script (`scripts/release.sh`) — macOS built natively, Windows
   cross-compiled in a container — and published to GitHub Releases.
-- Undo/redo for tag edits (Cmd/Ctrl+Z and Shift+Z / Ctrl+Y).
+- Undo/redo for tag edits (Cmd/Ctrl+Z and Shift+Z / Ctrl+Y). Undo history is
+  kept across saves, so you can undo an already-saved edit; the restored values
+  are marked unsaved again and written back on the next Save.
 - Copy and paste tags between files with Cmd/Ctrl+C and Cmd/Ctrl+V (in addition
   to the right-click menu). Copying also captures the cover art, which is
   embedded into the target files on the next save.
