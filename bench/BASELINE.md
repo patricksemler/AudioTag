@@ -96,7 +96,18 @@ filter, `menuItems` memo keyed on `rows`. These are what Phases 2–3 attack; th
 criterion numbers above are the objective half of the baseline, the React
 Profiler the subjective half.
 
-## Save (frontend → `save_tracks`, sequential)
+## Cover art (Phase 8 — evaluated, intentionally unchanged)
+
+Cover art is still fetched lazily, **one image at a time**, for the single
+selected file (`get_cover_art` → base64 → `data:` URL), with the existing
+stale-response guard. Scan never loads art into the `Track` model. No baseline
+measurement shows base64's 33% inflation or `data:` URL retention to be a
+memory or latency problem at one-image-at-a-time, so — per PLAN.md §11/§19
+("only if measured", don't add complexity) — the transport is left as base64.
+A `cover://` protocol or blob-URL + LRU cache remains the documented next step
+*if* a heap snapshot after many selection changes ever shows a real problem.
+
+## Save (frontend → `save_tracks` / `save_changes`, sequential)
 
 | Save | Files | Notes |
 |---|---|---|
