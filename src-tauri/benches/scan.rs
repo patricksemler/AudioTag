@@ -9,7 +9,7 @@
 //!
 //! See PLAN.md §4.3.
 
-use audiotag_lib::tags::{read_track, scan_paths, write_track, Track};
+use audiotag_lib::tags::{read_track, read_track_opt, scan_paths, write_track, Track};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::path::{Path, PathBuf};
 
@@ -33,7 +33,8 @@ fn first_with_ext(dir: &Path, ext: &str) -> Option<PathBuf> {
         .find(|p| p.extension().and_then(|e| e.to_str()) == Some(ext))
 }
 
-/// `read_track` over one representative file of each format.
+/// `read_track` over one representative file of each format, A/B'ing audio
+/// property parsing on vs off (Phase 1). `read_track` itself uses props-off.
 fn bench_read_per_format(c: &mut Criterion) {
     let mixed = data_dir().join("mixed-format");
     let mut group = c.benchmark_group("read_track_per_format");
@@ -42,7 +43,12 @@ fn bench_read_per_format(c: &mut Criterion) {
     for fmt in formats {
         if let Some(p) = first_with_ext(&mixed, fmt) {
             any = true;
-            group.bench_function(fmt, |b| b.iter(|| read_track(std::hint::black_box(&p))));
+            group.bench_function(format!("{fmt}/props_on"), |b| {
+                b.iter(|| read_track_opt(std::hint::black_box(&p), true))
+            });
+            group.bench_function(format!("{fmt}/props_off"), |b| {
+                b.iter(|| read_track_opt(std::hint::black_box(&p), false))
+            });
         }
     }
     if !any {
@@ -51,9 +57,10 @@ fn bench_read_per_format(c: &mut Criterion) {
     group.finish();
 }
 
-/// `read_track` over art-bearing files — measures the `has_art` materialization
-/// cost (lofty decodes embedded pictures during read). Compared against the
-/// presence-only path added in Phase 1.
+/// `read_track` over art-bearing files. Cover art is materialized either way
+/// (needed for `has_art`); this isolates the property-parsing delta on big
+/// files and documents the cover-materialization cost the streaming/concurrency
+/// phases bound the RSS of. See PLAN.md H3.
 fn bench_read_art(c: &mut Criterion) {
     let art = data_dir().join("art-heavy");
     let mut group = c.benchmark_group("read_track_art");
@@ -61,7 +68,12 @@ fn bench_read_art(c: &mut Criterion) {
     for fmt in ["flac", "mp3", "m4a"] {
         if let Some(p) = first_with_ext(&art, fmt) {
             any = true;
-            group.bench_function(fmt, |b| b.iter(|| read_track(std::hint::black_box(&p))));
+            group.bench_function(format!("{fmt}/props_on"), |b| {
+                b.iter(|| read_track_opt(std::hint::black_box(&p), true))
+            });
+            group.bench_function(format!("{fmt}/props_off"), |b| {
+                b.iter(|| read_track_opt(std::hint::black_box(&p), false))
+            });
         }
     }
     if !any {

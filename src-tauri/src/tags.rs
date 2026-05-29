@@ -5,9 +5,11 @@
 //! fetch embedded cover art.
 
 use base64::Engine;
-use lofty::config::WriteOptions;
+use lofty::config::{ParseOptions, WriteOptions};
+use lofty::file::TaggedFile;
 use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::prelude::*;
+use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, Tag, TagItem, TagType};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -23,7 +25,7 @@ const AUDIO_EXTS: &[&str] = &[
 ///
 /// All editable fields are strings so the frontend can treat them uniformly;
 /// numeric fields (track/disc/year) are validated on the UI side.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     /// Absolute path on disk — also serves as the stable identity of the row.
     pub path: String,
@@ -90,7 +92,7 @@ pub struct SaveResult {
 
 /// Base64-encoded cover art, used both to display art in the editor and to
 /// carry pasted art back to `save_tracks` for embedding.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CoverArt {
     pub mime: String,
     pub base64: String,
@@ -162,12 +164,32 @@ fn read_year(tag: &Tag) -> Option<String> {
         .filter(|s| s.len() == 4 && s.chars().all(|c| c.is_ascii_digit()))
 }
 
+/// Read a file with tags (and cover art) but *without* audio-stream property
+/// parsing when `read_properties` is false. We never display duration/bitrate/
+/// sample-rate, so parsing them is wasted work — disabling it produces a
+/// byte-identical `Track` (proven by the `properties_off_parity` test). Cover
+/// art is still read so `has_art` stays accurate; lofty 0.24 exposes no cheaper
+/// presence check, and `read_cover_art(false)` would silently zero `has_art`
+/// (see ADR 0005).
+fn open_tagged(path: &Path, read_properties: bool) -> lofty::error::Result<TaggedFile> {
+    Probe::open(path)?
+        .options(ParseOptions::new().read_properties(read_properties))
+        .read()
+}
+
 /// Build a `Track` model from a single file path.
 ///
 /// `pub` for the criterion benches; not part of a stable public API.
 #[doc(hidden)]
 pub fn read_track(path: &Path) -> Track {
-    let tagged = match lofty::read_from_path(path) {
+    read_track_opt(path, false)
+}
+
+/// `read_track` with explicit property-parsing control, for A/B benchmarking
+/// and parity testing. `read_track` calls this with `read_properties = false`.
+#[doc(hidden)]
+pub fn read_track_opt(path: &Path, read_properties: bool) -> Track {
+    let tagged = match open_tagged(path, read_properties) {
         Ok(t) => t,
         Err(e) => return Track::errored(path, e.to_string()),
     };
@@ -376,7 +398,8 @@ pub fn save_tracks(tracks: Vec<Track>) -> Vec<SaveResult> {
 /// Lazily fetch the first embedded cover art for a single file, base64-encoded.
 #[tauri::command]
 pub fn get_cover_art(path: String) -> Option<CoverArt> {
-    let tagged = lofty::read_from_path(&path).ok()?;
+    // Cover art is read; audio properties aren't needed here.
+    let tagged = open_tagged(Path::new(&path), false).ok()?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
     let pic = tag.pictures().first()?;
     let mime = pic
@@ -404,7 +427,8 @@ fn display_key(key: ItemKey, native: TagType) -> Option<String> {
 #[tauri::command]
 pub fn read_all_tags(path: String) -> Result<AllTags, String> {
     let p = Path::new(&path);
-    let tagged = lofty::read_from_path(p).map_err(|e| e.to_string())?;
+    // Only tag items are needed; skip audio-property parsing.
+    let tagged = open_tagged(p, false).map_err(|e| e.to_string())?;
 
     let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
         return Ok(AllTags {
@@ -652,5 +676,74 @@ mod tests {
         let results = scan_paths(vec![p.to_string_lossy().into_owned()]);
         assert!(results.is_empty(), "non-audio file should be ignored");
         let _ = std::fs::remove_file(&p);
+    }
+
+    fn fixtures_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+    }
+
+    /// Phase 1: disabling audio-property parsing must produce a byte-identical
+    /// `Track` for every format (we never display properties). Guards the
+    /// `read_properties(false)` optimization. See PLAN.md §5.1.
+    #[test]
+    fn properties_off_parity() {
+        let dir = fixtures_dir();
+        let formats = ["mp3", "flac", "m4a", "ogg", "opus", "wav", "aiff", "wv"];
+        for fmt in formats {
+            let path = dir.join(format!("sample.{fmt}"));
+            assert!(path.exists(), "missing fixture: {}", path.display());
+            let with = read_track_opt(&path, true);
+            let without = read_track_opt(&path, false);
+            assert_eq!(
+                with.error, None,
+                "{fmt}: fixture should read cleanly (props on)"
+            );
+            assert_eq!(
+                with, without,
+                "{fmt}: Track must be identical with properties on vs off"
+            );
+        }
+    }
+
+    /// Phase 1: `has_art` must stay accurate with the property-off read (cover
+    /// art is still parsed). An art-bearing file reads `has_art = true`; a
+    /// plain file reads `false`. See PLAN.md §5.1 / H3.
+    #[test]
+    fn has_art_parity() {
+        let dir = fixtures_dir();
+        let art = read_track_opt(&dir.join("sample_art.flac"), false);
+        assert_eq!(art.error, None, "art fixture should read cleanly");
+        assert!(art.has_art, "art fixture must report has_art = true");
+
+        let plain = read_track_opt(&dir.join("sample.flac"), false);
+        assert!(!plain.has_art, "plain fixture must report has_art = false");
+    }
+
+    /// Corrupt/unreadable files must not panic or abort the scan: they surface
+    /// as errored rows while valid files still read. See PLAN.md §13 / H11.
+    #[test]
+    fn scan_survives_corrupt_files() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("audiotag_corrupt_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A valid file alongside several adversarial ones.
+        std::fs::copy(fixtures_dir().join("sample.flac"), dir.join("valid.flac")).unwrap();
+        std::fs::write(dir.join("zero.mp3"), b"").unwrap();
+        std::fs::write(dir.join("text.mp3"), b"this is not audio at all").unwrap();
+        let mut truncated = std::fs::read(fixtures_dir().join("sample.flac")).unwrap();
+        truncated.truncate(120);
+        std::fs::write(dir.join("truncated.flac"), &truncated).unwrap();
+
+        let results = scan_paths(vec![dir.to_string_lossy().into_owned()]);
+        assert_eq!(results.len(), 4, "all four files should produce a row");
+        let ok = results.iter().filter(|t| t.error.is_none()).count();
+        let errored = results.iter().filter(|t| t.error.is_some()).count();
+        assert!(ok >= 1, "the valid file should read");
+        assert!(errored >= 1, "corrupt files should surface as errored rows");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

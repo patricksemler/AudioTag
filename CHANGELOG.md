@@ -60,6 +60,9 @@ adheres to [Semantic Versioning](https://semver.org/).
 - The tag editor no longer shows a redundant filename header or a collapse
   button (the focused file's name still appears in the toolbar), giving the
   cover art and fields more room.
+- Folder scanning is faster: reads now skip parsing audio-stream properties
+  (duration/bitrate) that the app never displays — up to ~50% less per-file
+  parse time on compressed formats (m4a/ogg/opus). Tag data is unchanged.
 
 ### Fixed
 

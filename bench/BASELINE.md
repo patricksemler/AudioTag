@@ -41,8 +41,15 @@ against it. Re-capture if the machine or the baseline commit changes.
 
 > **H3 confirmed.** Reading a file *only to set `has_art`* costs an order of
 > magnitude more when the file carries a large cover, because lofty materializes
-> the embedded picture bytes during the read. This is the highest-value backend
-> target (Phase 1).
+> the embedded picture bytes during the read.
+>
+> **Phase 1 result (`read_properties(false)`, props_on → props_off):** m4a
+> 61.6 → 28.8 µs (−53%), ogg 28.7 → 18.4 µs (−36%), opus 27.2 → 18.8 µs (−31%),
+> wv 28.1 → 24.3 µs (−13%); mp3/flac/wav/aiff within noise. `Track` output is
+> byte-identical (parity test). Art files: props-off is marginal (cover
+> materialization dominates), so bounding art-scan memory is deferred to the
+> streaming/concurrency phases (we keep `read_cover_art(true)` to preserve
+> `has_art`; see ADR 0005).
 
 ### `scan_paths` (walk + filter + sort + sequential read)
 
