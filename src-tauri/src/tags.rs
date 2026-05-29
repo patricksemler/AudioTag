@@ -132,6 +132,15 @@ fn ext_upper(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// True when `AUDIOTAG_TIMING=1` is set — gates dev-only timing spans printed to
+/// stderr (visible in the `pnpm tauri dev` console). Off by default; no release
+/// cost beyond an env lookup at the start of a scan/save. See PLAN.md §4.3.
+fn timing_enabled() -> bool {
+    std::env::var("AUDIOTAG_TIMING")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
 fn is_audio(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -154,7 +163,10 @@ fn read_year(tag: &Tag) -> Option<String> {
 }
 
 /// Build a `Track` model from a single file path.
-fn read_track(path: &Path) -> Track {
+///
+/// `pub` for the criterion benches; not part of a stable public API.
+#[doc(hidden)]
+pub fn read_track(path: &Path) -> Track {
     let tagged = match lofty::read_from_path(path) {
         Ok(t) => t,
         Err(e) => return Track::errored(path, e.to_string()),
@@ -216,7 +228,9 @@ fn apply_item(tag: &mut Tag, key: ItemKey, value: &Option<String>) {
     }
 }
 
-fn write_track(t: &Track) -> Result<(), String> {
+/// `pub` for the criterion benches; not part of a stable public API.
+#[doc(hidden)]
+pub fn write_track(t: &Track) -> Result<(), String> {
     let path = Path::new(&t.path);
     let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
 
@@ -273,6 +287,8 @@ fn write_track(t: &Track) -> Result<(), String> {
 /// audio file found. Folders are walked recursively. Results are sorted by path.
 #[tauri::command]
 pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
+    let timing = timing_enabled();
+    let t_walk = std::time::Instant::now();
     let mut files: Vec<std::path::PathBuf> = Vec::new();
 
     for p in paths {
@@ -288,30 +304,73 @@ pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
             files.push(path);
         }
     }
+    let walk_ms = t_walk.elapsed().as_secs_f64() * 1e3;
 
+    let t_sort = std::time::Instant::now();
     files.sort();
     files.dedup();
-    files.iter().map(|p| read_track(p)).collect()
+    let sort_ms = t_sort.elapsed().as_secs_f64() * 1e3;
+
+    let t_read = std::time::Instant::now();
+    let tracks: Vec<Track> = files.iter().map(|p| read_track(p)).collect();
+    let read_ms = t_read.elapsed().as_secs_f64() * 1e3;
+
+    if timing {
+        let bytes = serde_json::to_string(&tracks).map(|s| s.len()).unwrap_or(0);
+        eprintln!(
+            "[timing] scan_paths: {} files | walk {:.1}ms | sort+dedup {:.1}ms | read {:.1}ms | serialized {} bytes ({:.1} KB)",
+            tracks.len(),
+            walk_ms,
+            sort_ms,
+            read_ms,
+            bytes,
+            bytes as f64 / 1024.0,
+        );
+    }
+    tracks
 }
 
 /// Write edits for the given tracks back to disk. Returns a result per file.
 #[tauri::command]
 pub fn save_tracks(tracks: Vec<Track>) -> Vec<SaveResult> {
-    tracks
+    let timing = timing_enabled();
+    let count = tracks.len();
+    let t_all = std::time::Instant::now();
+    let mut max_file_ms = 0.0_f64;
+
+    let results = tracks
         .into_iter()
-        .map(|t| match write_track(&t) {
-            Ok(()) => SaveResult {
-                path: t.path,
-                ok: true,
-                error: None,
-            },
-            Err(e) => SaveResult {
-                path: t.path,
-                ok: false,
-                error: Some(e),
-            },
+        .map(|t| {
+            let t_file = std::time::Instant::now();
+            let result = match write_track(&t) {
+                Ok(()) => SaveResult {
+                    path: t.path,
+                    ok: true,
+                    error: None,
+                },
+                Err(e) => SaveResult {
+                    path: t.path,
+                    ok: false,
+                    error: Some(e),
+                },
+            };
+            let file_ms = t_file.elapsed().as_secs_f64() * 1e3;
+            if file_ms > max_file_ms {
+                max_file_ms = file_ms;
+            }
+            result
         })
-        .collect()
+        .collect();
+
+    if timing {
+        eprintln!(
+            "[timing] save_tracks: {} files | total {:.1}ms | slowest file {:.1}ms",
+            count,
+            t_all.elapsed().as_secs_f64() * 1e3,
+            max_file_ms,
+        );
+    }
+    results
 }
 
 /// Lazily fetch the first embedded cover art for a single file, base64-encoded.

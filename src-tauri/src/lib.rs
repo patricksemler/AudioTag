@@ -1,5 +1,7 @@
 mod session;
-mod tags;
+// `pub` so the criterion benches (a separate crate) can reach `read_track`,
+// `write_track`, and `scan_paths`. Not part of a stable public API.
+pub mod tags;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

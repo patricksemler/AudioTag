@@ -28,3 +28,10 @@ lofty = "0.24"
 walkdir = "2"
 base64 = "0.22"
 
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "scan"
+harness = false
+
