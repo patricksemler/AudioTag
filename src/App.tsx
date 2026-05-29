@@ -10,6 +10,7 @@ import {
   saveSession,
   saveTracks,
   scanPaths,
+  scanPathsStreamed,
 } from "./api";
 import { AdditionalTags } from "./components/AdditionalTags";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
@@ -34,6 +35,12 @@ const NUMERIC_FIELDS = new Set<EditableField>([
 function toRow(track: Track): Row {
   return { ...track, id: track.path, modified: false };
 }
+
+/**
+ * Use the streaming scan (rows paint as they load) vs the blocking `scan_paths`.
+ * A flag so we can fall back instantly if streaming ever misbehaves. PLAN.md §5.3.
+ */
+const USE_STREAMING = true;
 
 export default function App() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -162,19 +169,62 @@ export default function App() {
     if (paths.length === 0) return;
     setBusy(true);
     setMessage(remember ? "Scanning…" : "Restoring last session…");
+    clearHistory(); // structural change — past snapshots no longer apply
     try {
-      const tracks = await scanPaths(paths);
-      const existing = new Set(rowsRef.current.map((r) => r.id));
-      const additions = tracks.filter((t) => !existing.has(t.path)).map(toRow);
-      additions.forEach((a) => originals.current.set(a.id, { ...a }));
+      // Seed dedup + the running accumulator from what's already loaded. The
+      // accumulator (not rowsRef, which only updates on render) is the source of
+      // truth while batches stream in, so batches arriving faster than React can
+      // re-render never drop rows. Selection is set only on the first batch when
+      // the list started empty, so streaming never steals focus (PLAN.md §12).
+      const known = new Set(rowsRef.current.map((r) => r.id));
       const wasEmpty = rowsRef.current.length === 0;
-      const next = [...rowsRef.current, ...additions];
-      clearHistory(); // structural change — past snapshots no longer apply
-      commitRows(next);
-      if (wasEmpty && next.length > 0) {
-        setSelected(new Set([next[0].id]));
-        setFocusIndex(0);
-        anchor.current = 0;
+      let acc = rowsRef.current;
+      let added = 0;
+      let dupes = 0;
+      let selectedFirst = !wasEmpty;
+
+      const ingest = (tracks: Track[]) => {
+        const additions: Row[] = [];
+        for (const t of tracks) {
+          if (known.has(t.path)) {
+            dupes++;
+            continue;
+          }
+          known.add(t.path);
+          const r = toRow(t);
+          originals.current.set(r.id, { ...r });
+          additions.push(r);
+        }
+        if (additions.length === 0) return;
+        added += additions.length;
+        acc = [...acc, ...additions];
+        commitRows(acc);
+        if (!selectedFirst) {
+          selectedFirst = true;
+          setSelected(new Set([acc[0].id]));
+          setFocusIndex(0);
+          anchor.current = 0;
+        }
+      };
+
+      if (USE_STREAMING) {
+        await scanPathsStreamed(paths, (ev) => {
+          if (ev.event === "total") {
+            setMessage(
+              remember ? `Scanning… 0 of ${ev.data.count}` : `Restoring ${ev.data.count} files…`,
+            );
+          } else if (ev.event === "batch") {
+            ingest(ev.data.tracks);
+          } else if (ev.event === "progress") {
+            setMessage(
+              remember
+                ? `Scanning… ${ev.data.done} of ${ev.data.total}`
+                : `Restoring ${ev.data.done} of ${ev.data.total}…`,
+            );
+          }
+        });
+      } else {
+        ingest(await scanPaths(paths));
       }
 
       // Track the source paths for session restore.
@@ -188,9 +238,9 @@ export default function App() {
       if (remember && sourcesChanged) void saveSession(sources.current);
 
       setMessage(
-        additions.length === tracks.length
-          ? `Loaded ${additions.length} files`
-          : `Added ${additions.length} new files (${tracks.length - additions.length} already loaded)`,
+        dupes === 0
+          ? `Loaded ${added} file${added === 1 ? "" : "s"}`
+          : `Added ${added} new file${added === 1 ? "" : "s"} (${dupes} already loaded)`,
       );
     } catch (e) {
       setMessage(`Error: ${String(e)}`);

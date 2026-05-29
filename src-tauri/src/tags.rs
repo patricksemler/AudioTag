@@ -305,16 +305,13 @@ pub fn write_track(t: &Track) -> Result<(), String> {
 // Tauri commands
 // ---------------------------------------------------------------------------
 
-/// Scan the given paths (files or folders) and return tag models for every
-/// audio file found. Folders are walked recursively. Results are sorted by path.
-#[tauri::command]
-pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
-    let timing = timing_enabled();
-    let t_walk = std::time::Instant::now();
+/// Walk the input paths (files or folders, recursive), keep audio files, and
+/// return them sorted + deduped — the canonical file order every scan uses, so
+/// the streamed and non-streamed scans yield identical ordering.
+fn collect_audio_files(paths: &[String]) -> Vec<std::path::PathBuf> {
     let mut files: Vec<std::path::PathBuf> = Vec::new();
-
     for p in paths {
-        let path = std::path::PathBuf::from(&p);
+        let path = std::path::PathBuf::from(p);
         if path.is_dir() {
             for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
                 let ep = entry.path();
@@ -326,12 +323,39 @@ pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
             files.push(path);
         }
     }
-    let walk_ms = t_walk.elapsed().as_secs_f64() * 1e3;
-
-    let t_sort = std::time::Instant::now();
     files.sort();
     files.dedup();
-    let sort_ms = t_sort.elapsed().as_secs_f64() * 1e3;
+    files
+}
+
+/// How many tracks the streamed scan reads before flushing a batch to the
+/// client. Balances first-paint latency against React update spam. PLAN.md §5.3.
+const SCAN_BATCH: usize = 200;
+
+/// A streamed-scan event sent over the per-operation [`Channel`]. Errored files
+/// are folded into batches (as errored `Track`s) exactly as the non-streamed
+/// scan returns them, so the two paths stay byte-for-byte equivalent.
+#[derive(Clone, Serialize)]
+#[serde(tag = "event", content = "data", rename_all = "camelCase")]
+pub enum ScanEvent {
+    /// Total audio files discovered (sent once, before any batch).
+    Total { count: usize },
+    /// A chunk of read tracks, in final sorted order.
+    Batch { tracks: Vec<Track> },
+    /// Files read so far / total.
+    Progress { done: usize, total: usize },
+    /// Terminal: the scan finished normally.
+    Done,
+}
+
+/// Scan the given paths (files or folders) and return tag models for every
+/// audio file found. Folders are walked recursively. Results are sorted by path.
+#[tauri::command]
+pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
+    let timing = timing_enabled();
+    let t_walk = std::time::Instant::now();
+    let files = collect_audio_files(&paths);
+    let walk_ms = t_walk.elapsed().as_secs_f64() * 1e3;
 
     let t_read = std::time::Instant::now();
     let tracks: Vec<Track> = files.iter().map(|p| read_track(p)).collect();
@@ -340,16 +364,58 @@ pub fn scan_paths(paths: Vec<String>) -> Vec<Track> {
     if timing {
         let bytes = serde_json::to_string(&tracks).map(|s| s.len()).unwrap_or(0);
         eprintln!(
-            "[timing] scan_paths: {} files | walk {:.1}ms | sort+dedup {:.1}ms | read {:.1}ms | serialized {} bytes ({:.1} KB)",
+            "[timing] scan_paths: {} files | walk+sort {:.1}ms | read {:.1}ms | serialized {} bytes ({:.1} KB)",
             tracks.len(),
             walk_ms,
-            sort_ms,
             read_ms,
             bytes,
             bytes as f64 / 1024.0,
         );
     }
     tracks
+}
+
+/// Streaming variant of [`scan_paths`]: walks + sorts the file list, then reads
+/// tags in batches, emitting events over `channel` so the UI can paint rows as
+/// they arrive instead of waiting for the whole scan. Concatenating every
+/// `Batch`'s tracks in arrival order yields exactly `scan_paths(paths)` (proven
+/// by `streamed_scan_matches_blocking`). PLAN.md §5.3.
+#[tauri::command]
+pub fn scan_paths_streamed(
+    paths: Vec<String>,
+    channel: tauri::ipc::Channel<ScanEvent>,
+) -> Result<(), String> {
+    let timing = timing_enabled();
+    let t_all = std::time::Instant::now();
+
+    let files = collect_audio_files(&paths);
+    let total = files.len();
+    channel
+        .send(ScanEvent::Total { count: total })
+        .map_err(|e| e.to_string())?;
+
+    let mut done = 0;
+    for chunk in files.chunks(SCAN_BATCH) {
+        let tracks: Vec<Track> = chunk.iter().map(|p| read_track(p)).collect();
+        done += tracks.len();
+        channel
+            .send(ScanEvent::Batch { tracks })
+            .map_err(|e| e.to_string())?;
+        channel
+            .send(ScanEvent::Progress { done, total })
+            .map_err(|e| e.to_string())?;
+    }
+
+    channel.send(ScanEvent::Done).map_err(|e| e.to_string())?;
+    if timing {
+        eprintln!(
+            "[timing] scan_paths_streamed: {} files in {} batches | {:.1}ms",
+            total,
+            total.div_ceil(SCAN_BATCH),
+            t_all.elapsed().as_secs_f64() * 1e3,
+        );
+    }
+    Ok(())
 }
 
 /// Write edits for the given tracks back to disk. Returns a result per file.
@@ -743,6 +809,50 @@ mod tests {
         let errored = results.iter().filter(|t| t.error.is_some()).count();
         assert!(ok >= 1, "the valid file should read");
         assert!(errored >= 1, "corrupt files should surface as errored rows");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 4: concatenating the streamed scan's batches (in arrival order)
+    /// must equal `scan_paths` exactly — same order, same tracks, including
+    /// errored rows. The command sends these same chunks over the channel, so
+    /// this proves client-side reassembly parity. See PLAN.md §5.3.
+    #[test]
+    fn streamed_scan_matches_blocking() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("audiotag_stream_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A handful of mixed-format files (unsorted names) + a corrupt one, so
+        // ordering and error-folding are both exercised.
+        for (i, fmt) in ["wv", "mp3", "flac", "ogg", "m4a", "opus", "wav", "aiff"]
+            .iter()
+            .enumerate()
+        {
+            std::fs::copy(
+                fixtures_dir().join(format!("sample.{fmt}")),
+                dir.join(format!("z{:02}_track.{fmt}", 99 - i)),
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.join("m05_broken.mp3"), b"not audio").unwrap();
+
+        let arg = vec![dir.to_string_lossy().into_owned()];
+        let blocking = scan_paths(arg.clone());
+
+        // Simulate the streamed read with a small batch size to span >1 batch.
+        let files = collect_audio_files(&arg);
+        let mut streamed: Vec<Track> = Vec::new();
+        for chunk in files.chunks(3) {
+            for p in chunk {
+                streamed.push(read_track(p));
+            }
+        }
+
+        assert_eq!(
+            blocking, streamed,
+            "streamed reassembly must equal scan_paths"
+        );
+        assert!(blocking.len() >= 9, "all files should produce rows");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

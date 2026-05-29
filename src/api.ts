@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { AllTags, CoverArt, SaveAllResult, SaveResult, TagItemDto, Track } from "./types";
 
@@ -32,6 +32,28 @@ export async function pickFiles(): Promise<string[]> {
 /** Scan files/folders and return tag models for all audio files found. */
 export function scanPaths(paths: string[]): Promise<Track[]> {
   return invoke<Track[]>("scan_paths", { paths });
+}
+
+/** A streamed-scan event (mirrors the Rust `ScanEvent` enum). */
+export type ScanEvent =
+  | { event: "total"; data: { count: number } }
+  | { event: "batch"; data: { tracks: Track[] } }
+  | { event: "progress"; data: { done: number; total: number } }
+  | { event: "done" };
+
+/**
+ * Streaming scan: tags are read in batches and delivered via `onEvent` as they
+ * arrive, so the UI can paint rows before the whole scan finishes. The returned
+ * promise resolves when the scan is complete (after the final `done` event).
+ * Concatenating every batch's tracks reproduces `scanPaths(paths)` exactly.
+ */
+export function scanPathsStreamed(
+  paths: string[],
+  onEvent: (event: ScanEvent) => void,
+): Promise<void> {
+  const channel = new Channel<ScanEvent>();
+  channel.onmessage = onEvent;
+  return invoke("scan_paths_streamed", { paths, channel });
 }
 
 /** Write edits for the given tracks back to disk. */

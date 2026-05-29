@@ -10,6 +10,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             tags::scan_paths,
+            tags::scan_paths_streamed,
             tags::save_tracks,
             tags::get_cover_art,
             tags::read_all_tags,
