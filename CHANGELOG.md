@@ -60,9 +60,9 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Dragging files or folders over the window now outlines the drop target (the
   file grid, or the whole workspace when empty) with a dashed accent border
   instead of dimming the whole app behind a centered card.
-- The divider between the grid and the tag editor no longer shows a bar at all;
-  the two sit flush and you just drag the edge to resize (a focus ring still
-  appears for keyboard users).
+- The grid and tag editor are now separated by a thin 1px divider (matching the
+  grid's column lines) instead of a chunky grey handle; you just drag the edge
+  to resize.
 - Replaced emoji UI glyphs with [lucide](https://lucide.dev) icons for
   consistent cross-platform rendering.
 - Track and disc numbers are now shown as a compact "Track _n_ of _n_" row in
