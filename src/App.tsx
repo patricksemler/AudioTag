@@ -355,6 +355,13 @@ export default function App() {
   // Edit a single row's field (used by inline double-click editing in the grid).
   const editCell = useCallback(
     (id: string, field: EditableField, value: string) => {
+      // Committing an unchanged value (e.g. opening the inline editor and
+      // clicking away, or the Enter-advance landing on a cell you don't touch)
+      // must be a true no-op: recording an identical snapshot here would put a
+      // no-op entry on top of the undo stack, so the next undo would "do
+      // nothing" before a second undo reached the real edit.
+      const cur = rowsRef.current.find((r) => r.id === id);
+      if (!cur || (cur[field] ?? "") === value) return;
       recordHistory(null); // a committed inline edit is a discrete step
       commitRows(
         rowsRef.current.map((r) => {
@@ -722,6 +729,54 @@ export default function App() {
     const onCtx = (e: MouseEvent) => e.preventDefault();
     window.addEventListener("contextmenu", onCtx);
     return () => window.removeEventListener("contextmenu", onCtx);
+  }, []);
+
+  // Strip the browser-only gestures the webview inherits, so the window behaves
+  // like a native app rather than a web page: no reload, print, in-engine
+  // zoom/pinch, history back/forward, or HTML drag of elements/images. (OS-level
+  // file drag-and-drop and the pointer-based column reorder are unaffected — they
+  // don't use the HTML5 drag API.)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      const k = e.key.toLowerCase();
+      // Reload (Cmd/Ctrl+R, Ctrl+Shift+R, F5).
+      if ((mod && k === "r") || e.key === "F5") return e.preventDefault();
+      // Print.
+      if (mod && k === "p") return e.preventDefault();
+      // In-engine zoom (Cmd/Ctrl with +/=/-/_/0, including the numpad).
+      if (mod && (k === "+" || k === "=" || k === "-" || k === "_" || k === "0")) {
+        return e.preventDefault();
+      }
+      // History back/forward (Alt+Arrows; Cmd+[ / Cmd+] on macOS).
+      if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        return e.preventDefault();
+      }
+      if (e.metaKey && (e.key === "[" || e.key === "]")) return e.preventDefault();
+    };
+    // Ctrl/Cmd+wheel and trackpad pinch both arrive as a ctrl-modified wheel.
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) e.preventDefault();
+    };
+    // Safari/WKWebView pinch-zoom gestures (not covered by the wheel handler).
+    const onGesture = (e: Event) => e.preventDefault();
+    // No native drag of images, text, or other elements.
+    const onDragStart = (e: DragEvent) => e.preventDefault();
+
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("gesturestart", onGesture);
+    window.addEventListener("gesturechange", onGesture);
+    window.addEventListener("gestureend", onGesture);
+    window.addEventListener("dragstart", onDragStart);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("gesturestart", onGesture);
+      window.removeEventListener("gesturechange", onGesture);
+      window.removeEventListener("gestureend", onGesture);
+      window.removeEventListener("dragstart", onDragStart);
+    };
   }, []);
 
   // Global keyboard shortcuts. `additionalForRef` lets us bail when the

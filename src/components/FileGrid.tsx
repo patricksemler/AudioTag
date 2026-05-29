@@ -35,41 +35,8 @@ const MIN_COL = 48;
 // ghost) and a "gap" placeholder of its width is inserted at the drop slot.
 type RenderCol = { c: number; p: number } | "gap";
 
-// Reused offscreen canvas for measuring text width when placing the edit caret.
+// Reused offscreen canvas for measuring text width (column auto-fit).
 let measureCanvas: HTMLCanvasElement | null = null;
-
-/**
- * Given an open <input> and the viewport x of the click that opened it, return
- * the character index whose boundary is nearest that x — so the caret lands
- * where the user clicked rather than selecting the whole value.
- */
-function caretIndexFromClientX(input: HTMLInputElement, clientX: number): number {
-  const text = input.value;
-  if (!text) return 0;
-  const cs = getComputedStyle(input);
-  const rect = input.getBoundingClientRect();
-  const padL = parseFloat(cs.paddingLeft) || 0;
-  const padR = parseFloat(cs.paddingRight) || 0;
-  measureCanvas ??= document.createElement("canvas");
-  const ctx = measureCanvas.getContext("2d");
-  if (!ctx) return text.length;
-  ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-  const fullW = ctx.measureText(text).width;
-  const innerW = rect.width - padL - padR;
-  // Right-aligned (numeric) inputs render their text flush to the right edge.
-  const originX =
-    cs.textAlign === "right" ? rect.right - padR - Math.min(fullW, innerW) : rect.left + padL;
-  const x = clientX - originX;
-  if (x <= 0) return 0;
-  if (x >= fullW) return text.length;
-  let prev = 0;
-  for (let i = 1; i <= text.length; i++) {
-    const w = ctx.measureText(text.slice(0, i)).width;
-    if (w >= x) return x < (prev + w) / 2 ? i - 1 : i;
-    prev = w;
-  }
-  return text.length;
-}
 
 // ---------------------------------------------------------------------------
 // GridRow — one memoized grid row.
@@ -103,7 +70,7 @@ interface GridRowProps {
   editRef: React.RefObject<HTMLInputElement | null>;
   onRowMouseDown: (e: React.MouseEvent, index: number) => void;
   onRowContextMenu: (e: React.MouseEvent, index: number) => void;
-  onCellMouseDown: (e: React.MouseEvent, row: Row, col: ColumnDef) => void;
+  onCellMouseDown: (e: React.MouseEvent, index: number, row: Row, col: ColumnDef) => void;
   onDraftChange: (value: string) => void;
   onEditKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onEditBlur: () => void;
@@ -166,7 +133,7 @@ function GridRowImpl(props: GridRowProps) {
             className={`cell ${isNum ? "cell-num" : ""}${isEditing ? " is-editing" : ""}`}
             style={{ width: colWidths[i] }}
             title={isEditing ? undefined : value || undefined}
-            onMouseDown={(e) => props.onCellMouseDown(e, row, col)}
+            onMouseDown={(e) => props.onCellMouseDown(e, index, row, col)}
           >
             {/* The File column carries the row's status indicator inline
                 (unsaved dot / error icon) so there's no separate gutter. */}
@@ -260,8 +227,6 @@ export function FileGrid(props: FileGridProps) {
   const [editing, setEditing] = useState<{ id: string; key: EditableField } | null>(null);
   const [draft, setDraft] = useState("");
   const editRef = useRef<HTMLInputElement>(null);
-  // Viewport x of the click that opened the editor, used to place the caret.
-  const clickXRef = useRef<number | null>(null);
 
   // Refs mirroring state that the stabilized callbacks read, so those callbacks
   // can keep a constant identity (required for the GridRow memo to hold) while
@@ -272,22 +237,23 @@ export function FileGrid(props: FileGridProps) {
   editingRef.current = editing;
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  // Mirror of `rows` so the stabilized edit callbacks can look a row up by id
+  // without taking `rows` as a dependency (its identity churns on every edit).
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
 
   useEffect(() => {
     const input = editRef.current;
     if (!editing || !input) return;
     input.focus();
-    const clickX = clickXRef.current;
-    clickXRef.current = null;
-    // Place the caret where the user clicked (not select-all). If we have no
-    // click position (e.g. keyboard-initiated), fall back to the end.
-    const idx = clickX == null ? input.value.length : caretIndexFromClientX(input, clickX);
-    input.setSelectionRange(idx, idx);
+    // Select the whole value when an editor opens (whether by click or by the
+    // keyboard Enter-advance) so it can be overwritten immediately. The user can
+    // still click within the field to drop the caret at a specific spot.
+    input.select();
   }, [editing]);
 
-  const beginEdit = useCallback((row: Row, col: ColumnDef, clientX?: number) => {
+  const beginEdit = useCallback((row: Row, col: ColumnDef) => {
     if (col.editable === false || row.error) return;
-    clickXRef.current = clientX ?? null;
     setDraft(row[col.key] ?? "");
     setEditing({ id: row.id, key: col.key as EditableField });
   }, []);
@@ -550,7 +516,7 @@ export function FileGrid(props: FileGridProps) {
   // click on a cell of that already-active row starts editing it. Modifier /
   // shift clicks and non-editable cells fall through to row selection.
   const handleCellMouseDown = useCallback(
-    (e: React.MouseEvent, row: Row, col: ColumnDef) => {
+    (e: React.MouseEvent, index: number, row: Row, col: ColumnDef) => {
       if (e.button !== 0) return;
       if (e.shiftKey || e.metaKey || e.ctrlKey) return;
       if (col.editable === false || row.error) return;
@@ -563,9 +529,13 @@ export function FileGrid(props: FileGridProps) {
       // browser would move focus to the grid container after our handler runs —
       // which blurs the just-opened input and immediately commits/closes it.
       e.preventDefault();
-      beginEdit(row, col, e.clientX);
+      // An inline edit only ever touches this one row, so a lingering multi-row
+      // selection (e.g. after Ctrl/Cmd+A) is misleading — collapse it to the row
+      // being edited so the bulk highlight clears as editing begins.
+      if (selectedRef.current.size > 1) onSelectSingle(index);
+      beginEdit(row, col);
     },
-    [beginEdit],
+    [beginEdit, onSelectSingle],
   );
 
   const handleEditKeyDown = useCallback(
@@ -574,7 +544,27 @@ export function FileGrid(props: FileGridProps) {
       const el = e.currentTarget;
       if (e.key === "Enter") {
         e.preventDefault();
+        const ed = editingRef.current;
         commitEdit();
+        // Spreadsheet-style: after committing, drop straight into editing the
+        // same column on the next row (skipping unreadable/errored rows) so a
+        // field can be filled top-to-bottom from the keyboard. Stops at the last
+        // row. commitEdit() set `editing` to null; beginEdit re-sets it, and
+        // React batches both so only the next cell's editor actually renders.
+        if (ed) {
+          const list = rowsRef.current;
+          const curIdx = list.findIndex((r) => r.id === ed.id);
+          const col = GRID_COLUMNS.find((c) => c.key === ed.key);
+          if (curIdx >= 0 && col) {
+            let ni = curIdx + 1;
+            while (ni < list.length && list[ni].error) ni++;
+            if (ni < list.length) {
+              virtualizer.scrollToIndex(ni, { align: "auto" });
+              onSelectSingle(ni);
+              beginEdit(list[ni], col);
+            }
+          }
+        }
       } else if (e.key === "Escape") {
         e.preventDefault();
         setEditing(null);
@@ -589,7 +579,7 @@ export function FileGrid(props: FileGridProps) {
         e.preventDefault();
       }
     },
-    [commitEdit],
+    [commitEdit, beginEdit, onSelectSingle, virtualizer],
   );
 
   const focusedRow = rows[focusIndex];
