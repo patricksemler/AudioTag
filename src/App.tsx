@@ -623,10 +623,12 @@ export default function App() {
   const empty = rows.length === 0;
   const currentFile = rows[focusIndex]?.filename;
 
-  // Build the right-click menu for the targeted row.
+  // Build the right-click menu for the targeted row. Looks the target up via
+  // `rowsRef` (not `rows`) so it doesn't recompute on every edit — the menu is
+  // transient and rebuilt whenever it (re)opens.
   const menuItems: MenuItem[] = useMemo(() => {
     if (!menu) return [];
-    const targetRow = rows.find((r) => r.id === menu.rowId);
+    const targetRow = rowsRef.current.find((r) => r.id === menu.rowId);
     const selCount = selected.size;
     const plural = selCount === 1 ? "" : "s";
     return [
@@ -659,7 +661,7 @@ export default function App() {
         onSelect: removeSelected,
       },
     ];
-  }, [menu, rows, selected, clipboardFilled, copyTags, pasteTags, clearTags, removeSelected]);
+  }, [menu, selected, clipboardFilled, copyTags, pasteTags, clearTags, removeSelected]);
 
   // Find & replace targets the selection, or all files when nothing is selected.
   const frTargetCount = selected.size > 0 ? selected.size : rows.length;
