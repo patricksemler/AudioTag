@@ -19,6 +19,13 @@ export interface Track {
 
   has_art: boolean;
   error: string | null;
+
+  /**
+   * Pending cover art to write on the next save (UI/save-only; never returned
+   * by a scan). `undefined`/`null` means "no change"; a value replaces the
+   * embedded art. Clearing art is driven by `has_art = false`.
+   */
+  art?: CoverArt | null;
 }
 
 /** A grid row: a track plus UI-only derived state. */
